@@ -1,0 +1,1012 @@
+JAPANESE MANAGEMENT API TESTING GUIDE
+Project: backend-code
+Workspace path: C:\Users\SCAN\system\backend
+
+Base URL
+--------
+Local default:
+  http://localhost:3000
+
+API route groups used by Japanese Management:
+  /api/auth
+  /api/users
+  /api/overtime
+
+Authentication
+--------------
+Protected endpoints require this header:
+  Authorization: Bearer <japanese-management-token>
+
+Tokens are returned by:
+  POST /api/auth/login
+
+Default token expiry:
+  1 hour, unless AUTH_TOKEN_EXPIRES_IN_SECONDS is changed.
+
+
+IMPORTANT JAPANESE MANAGEMENT ACCOUNT RULES
+============================================
+
+The Japanese Management role is:
+  japanese_management
+
+The account must have users.status equal to active.
+
+Japanese Management does not need an employee profile to use its approval and
+view-only endpoints.
+
+Before approving a Department OT Plan, the account must have a saved signature.
+Only Admin can upload or replace that signature.
+
+Japanese Management can approve only an approval assignment linked to its exact
+user ID. With two Japanese Management approvers, each account receives and acts
+on its own pending approval record.
+
+Japanese Management is a preliminary approver. Supervisor and all assigned
+Japanese Management approvals must be completed before HR/Admin final approval.
+
+
+ENDPOINT SUMMARY FOR JAPANESE MANAGEMENT
+=========================================
+
+Public authentication:
+  POST /api/auth/login
+
+Profile and signature preview:
+  GET /api/auth/me
+  GET /api/users/signature
+
+View-only master data:
+  GET /api/overtime/departments
+  GET /api/overtime/employees
+  GET /api/overtime/employees/:employeeId
+  GET /api/overtime/policies
+  GET /api/overtime/approval-routes
+  GET /api/overtime/approval-routes/:routeId
+
+View-only planned overtime:
+  GET /api/overtime/plans
+  GET /api/overtime/plans/items
+  GET /api/overtime/plans/calendar
+  GET /api/overtime/plans/:planId
+  GET /api/overtime/plans/pending-approvals
+  GET /api/overtime/plans/:planId/approval-details
+  GET /api/overtime/plans/:planId/final-document
+
+Japanese Management approval actions:
+  PATCH /api/overtime/plans/:planId/approval/approve
+  PATCH /api/overtime/plans/:planId/approval/reject
+
+View-only Actual OT:
+  GET /api/overtime/actual-periods
+  GET /api/overtime/actual-periods/:actualPeriodId
+  GET /api/overtime/actual-periods/:actualPeriodId/final-document
+
+
+NOT AVAILABLE TO JAPANESE MANAGEMENT
+=====================================
+
+Account and signature administration:
+  POST   /api/users/signature
+  GET    /api/admin/users
+  POST   /api/admin/users
+  PATCH  /api/admin/users/:userId
+  DELETE /api/admin/users/:userId
+  POST   /api/admin/overtime/plans/:departmentPlanId/purge-data
+
+Master data changes:
+  POST  /api/overtime/departments
+  POST  /api/overtime/employees
+  PATCH /api/overtime/employees/:employeeId
+  POST  /api/overtime/approval-routes
+  POST  /api/overtime/approval-routes/:routeId/assignments
+  DELETE /api/overtime/approval-routes/:routeId/assignments/:assignmentId
+  PATCH /api/overtime/approval-routes/:routeId/status
+
+OT Plan changes:
+  GET    /api/overtime/plans/supervisor-dashboard
+  POST   /api/overtime/plans/department/from-drafts
+  POST   /api/overtime/plans
+  PATCH  /api/overtime/plans/:planId
+  DELETE /api/overtime/plans/:planId
+  POST   /api/overtime/plans/:planId/items
+  POST   /api/overtime/plans/:planId/items/bulk
+  PATCH  /api/overtime/plans/:planId/items/:itemId
+  DELETE /api/overtime/plans/:planId/items/:itemId
+  PATCH  /api/overtime/plans/:planId/submit
+  PATCH  /api/overtime/plans/:planId/sign
+  PATCH  /api/overtime/plans/:planId/approve
+  PATCH  /api/overtime/plans/:planId/reject
+  PATCH  /api/overtime/plans/:planId/close
+  PATCH  /api/overtime/plans/:planId/supervisor-accept
+  PATCH  /api/overtime/plans/:planId/supervisor-return
+  PATCH  /api/overtime/plans/:planId/start-approval
+  PATCH  /api/overtime/plans/:planId/reset-status
+  POST   /api/overtime/plans/:planId/final-document/generate
+
+Actual OT changes:
+  PATCH /api/overtime/actual-entries/:actualEntryId
+  POST  /api/overtime/actual-entries/:actualEntryId/comments
+  PATCH /api/overtime/actual-periods/:actualPeriodId/finalize
+  POST  /api/overtime/actual-periods/:actualPeriodId/final-document/generate
+
+
+JAPANESE MANAGEMENT SETUP WORKFLOW
+==================================
+
+1. Admin creates the Japanese Management account.
+
+Endpoint:
+  POST /api/admin/users
+
+Auth:
+  Required Admin token
+
+Request body:
+  {
+    "firstName": "Kenji",
+    "middleName": "",
+    "lastName": "Sato",
+    "email": "kenji.sato@example.com",
+    "password": "JapaneseManager@123",
+    "role": "japanese_management",
+    "status": "active"
+  }
+
+2. Admin uploads the Japanese Management signature.
+
+Endpoint:
+  POST /api/users/signature
+
+Auth:
+  Required Admin token
+
+Postman body type:
+  form-data
+
+Fields:
+  userId      Text  <japanese-management-user-id>
+  signature   File  <PNG or JPEG signature image>
+
+3. Admin or HR assigns the user to an approval route.
+
+The route can contain two Japanese Management users:
+  {
+    "departmentId": "DEP-PRODUCTION-RTD",
+    "routeName": "Production RTD OT Approval Route",
+    "status": "active",
+    "supervisorApproverUserId": "user-supervisor-001",
+    "japaneseManagementApproverUserIds": [
+      "user-japanese-management-001",
+      "user-japanese-management-002"
+    ]
+  }
+
+4. Log in using the Japanese Management account.
+
+
+1. LOGIN
+========
+
+Endpoint:
+  POST /api/auth/login
+
+Auth:
+  None
+
+Postman body type:
+  raw JSON
+
+Request body:
+  {
+    "email": "kenji.sato@example.com",
+    "password": "JapaneseManager@123"
+  }
+
+Success response:
+  Status: 200
+  {
+    "token": "<jwt-token>",
+    "user": {
+      "id": "user-japanese-management-001",
+      "firstName": "Kenji",
+      "middleName": "",
+      "lastName": "Sato",
+      "name": "Kenji Sato",
+      "email": "kenji.sato@example.com",
+      "role": "japanese_management",
+      "status": "active",
+      "hasEmployeeProfile": true,
+      "employeeId": null
+    }
+  }
+
+Note:
+  hasEmployeeProfile is true for non-user roles by current response design. It
+  does not mean that Japanese Management has an employees table record.
+
+
+2. GET CURRENT PROFILE
+======================
+
+Endpoint:
+  GET /api/auth/me
+
+Auth:
+  Required Japanese Management token
+
+Request body:
+  {}
+
+Success response:
+  Status: 200
+  {
+    "user": {
+      "id": "user-japanese-management-001",
+      "firstName": "Kenji",
+      "lastName": "Sato",
+      "email": "kenji.sato@example.com",
+      "role": "japanese_management",
+      "status": "active",
+      "hasEmployeeProfile": true,
+      "employeeId": null
+    }
+  }
+
+
+3. GET OWN SIGNATURE PREVIEW
+============================
+
+Endpoint:
+  GET /api/users/signature
+
+Auth:
+  Required Japanese Management token
+
+Request body:
+  {}
+
+Success response:
+  Status: 200
+  {
+    "signature": {
+      "signatureId": "SIGNATURE-...",
+      "userId": "user-japanese-management-001",
+      "uploadedBy": "user-admin-001",
+      "signatureFilePath": "users/user-japanese-management-001/....png",
+      "mimeType": "image/png",
+      "status": "active",
+      "signedUrl": "https://...",
+      "expiresInSeconds": 300
+    }
+  }
+
+Missing signature:
+  Status: 404
+  {
+    "message": "No saved signature was found.",
+    "code": "SIGNATURE_NOT_FOUND"
+  }
+
+
+4. LIST DEPARTMENTS
+===================
+
+Endpoint:
+  GET /api/overtime/departments
+
+Auth:
+  Required Japanese Management token
+
+Filters:
+  None
+
+Success response:
+  Status: 200
+  {
+    "departments": [
+      {
+        "departmentId": "DEP-PRODUCTION-RTD",
+        "departmentName": "Production RTD",
+        "parentDepartmentId": "",
+        "headEmployeeId": "",
+        "status": "active"
+      }
+    ]
+  }
+
+
+5. LIST EMPLOYEES
+=================
+
+Endpoint:
+  GET /api/overtime/employees
+
+Auth:
+  Required Japanese Management token
+
+Important:
+  Japanese Management has unrestricted read access to employee profiles. Use a
+  department or supervisor filter when a smaller list is needed.
+
+Supported query filters:
+  employeeId
+  userId
+  employeeNo
+  departmentId
+  supervisorUserId
+  shift=day or night
+  employmentType
+  status=active or inactive
+
+Example:
+  GET /api/overtime/employees?departmentId=DEP-PRODUCTION-RTD&status=active
+
+Success response:
+  Status: 200
+  {
+    "employees": [
+      {
+        "employeeId": "EMP-001",
+        "userId": "user-employee-001",
+        "employeeNo": "EMP-001",
+        "fullName": "Juan D Cruz",
+        "email": "juan.cruz@example.com",
+        "departmentId": "DEP-PRODUCTION-RTD",
+        "departmentName": "Production RTD",
+        "position": "Operator",
+        "supervisorUserId": "user-supervisor-001",
+        "supervisorName": "Sample Supervisor",
+        "shift": "day",
+        "employmentType": "regular",
+        "status": "active",
+        "userStatus": "active"
+      }
+    ]
+  }
+
+
+6. GET EMPLOYEE BY ID
+=====================
+
+Endpoint:
+  GET /api/overtime/employees/:employeeId
+
+Example:
+  GET /api/overtime/employees/EMP-001
+
+Auth:
+  Required Japanese Management token
+
+Success response:
+  Status: 200
+  {
+    "employee": {
+      "employeeId": "EMP-001",
+      "userId": "user-employee-001",
+      "employeeNo": "EMP-001",
+      "fullName": "Juan D Cruz",
+      "departmentId": "DEP-PRODUCTION-RTD",
+      "departmentName": "Production RTD",
+      "supervisorUserId": "user-supervisor-001",
+      "status": "active",
+      "userStatus": "active"
+    }
+  }
+
+
+7. LIST OVERTIME POLICIES
+=========================
+
+Endpoint:
+  GET /api/overtime/policies
+
+Auth:
+  Required Japanese Management token
+
+Filters:
+  None
+
+Success response:
+  Status: 200
+  {
+    "policies": [
+      {
+        "policyId": "POL-...",
+        "name": "Regular Overtime",
+        "minimumHours": 1,
+        "maximumHoursPerDay": 4,
+        "requiresSupervisorApproval": "yes",
+        "requiresHrApproval": "yes",
+        "rateMultiplier": 1.25,
+        "status": "active"
+      }
+    ]
+  }
+
+
+8. LIST APPROVAL ROUTES
+=======================
+
+Endpoint:
+  GET /api/overtime/approval-routes
+
+Auth:
+  Required Japanese Management token
+
+Supported query filters:
+  departmentId
+  status=active or inactive
+
+Example:
+  GET /api/overtime/approval-routes?departmentId=DEP-PRODUCTION-RTD&status=active
+
+Success response:
+  Status: 200
+  {
+    "approvalRoutes": [
+      {
+        "routeId": "OTROUTE-...",
+        "departmentId": "DEP-PRODUCTION-RTD",
+        "departmentName": "Production RTD",
+        "routeName": "Production RTD OT Approval Route",
+        "status": "active"
+      }
+    ]
+  }
+
+
+9. GET APPROVAL ROUTE DETAIL
+============================
+
+Endpoint:
+  GET /api/overtime/approval-routes/:routeId
+
+Auth:
+  Required Japanese Management token
+
+Success response:
+  Status: 200
+  {
+    "approvalRoute": {
+      "routeId": "OTROUTE-...",
+      "departmentId": "DEP-PRODUCTION-RTD",
+      "routeName": "Production RTD OT Approval Route",
+      "status": "active",
+      "assignedApprovers": [
+        {
+          "assignmentId": "OTASSIGN-...",
+          "routeId": "OTROUTE-...",
+          "approvalLabel": "Assigned Japanese Management Approval",
+          "approverRole": "japanese_management",
+          "approverUserId": "user-japanese-management-001",
+          "approverName": "Kenji Sato"
+        }
+      ]
+    }
+  }
+
+
+10. LIST OVERTIME PLANS
+=======================
+
+Endpoint:
+  GET /api/overtime/plans
+
+Auth:
+  Required Japanese Management token
+
+Important:
+  Japanese Management has unrestricted read access to Employee and Department
+  OT Plans. Apply filters to limit the result.
+
+Supported query filters:
+  status
+  periodType=weekly or monthly
+  departmentId
+  employeeId
+  planScope=employee or department
+  dateFrom or from or startDate
+  dateTo or to or endDate
+  year
+  month=1 through 12
+  currentApproverRole
+  currentApproverUserId
+  limit=1 through 100
+  offset=0 or greater
+
+Multiple statuses can be comma-separated:
+  status=pending_approval,approved
+
+Example:
+  GET /api/overtime/plans?departmentId=DEP-PRODUCTION-RTD&planScope=department&periodType=weekly&status=pending_approval,approved&dateFrom=2026-08-10&dateTo=2026-08-16
+
+Success response:
+  Status: 200
+  {
+    "overtimePlans": [
+      {
+        "planId": "DEPTPLAN-...",
+        "departmentId": "DEP-PRODUCTION-RTD",
+        "departmentName": "Production RTD",
+        "periodType": "weekly",
+        "periodStartDate": "2026-08-10",
+        "periodEndDate": "2026-08-16",
+        "status": "pending_approval",
+        "planScope": "department",
+        "currentApproverRole": "japanese_management",
+        "currentApproverUserId": "user-japanese-management-001",
+        "itemCount": 5,
+        "plannedHours": 12
+      }
+    ]
+  }
+
+
+11. LIST OVERTIME PLAN ITEMS
+============================
+
+Endpoint:
+  GET /api/overtime/plans/items
+
+Auth:
+  Required Japanese Management token
+
+Supported query filters:
+  planId
+  status
+  periodType=weekly or monthly
+  planScope=employee or department
+  departmentId
+  employeeId
+  createdBy or userId
+  approvedOnly=true or false
+  currentApproverRole
+  currentApproverUserId
+  dateFrom or from or startDate
+  dateTo or to or endDate
+  year
+  month
+  limit=1 through 100
+  offset=0 or greater
+
+Example:
+  GET /api/overtime/plans/items?planId=DEPTPLAN-...&departmentId=DEP-PRODUCTION-RTD
+
+Success response:
+  Status: 200
+  {
+    "overtimePlanItems": [
+      {
+        "planItemId": "PLANITEM-...",
+        "planId": "DEPTPLAN-...",
+        "employeeId": "EMP-001",
+        "employeeNo": "EMP-001",
+        "employeeName": "Juan D Cruz",
+        "plannedDate": "2026-08-12",
+        "plannedHours": 3,
+        "reason": "Production support",
+        "sourceEmployeePlanId": "PLAN-EMPLOYEE-...",
+        "planStatus": "pending_approval",
+        "planScope": "department"
+      }
+    ]
+  }
+
+
+12. GET OVERTIME PLAN CALENDAR SUMMARY
+======================================
+
+Endpoint:
+  GET /api/overtime/plans/calendar
+
+Auth:
+  Required Japanese Management token
+
+Supported filters:
+  The same plan-item filters from Section 11, except limit and offset are not
+  used by the calendar summary.
+
+Example:
+  GET /api/overtime/plans/calendar?departmentId=DEP-PRODUCTION-RTD&planScope=department&dateFrom=2026-08-10&dateTo=2026-08-16
+
+Success response:
+  Status: 200
+  {
+    "calendar": [
+      {
+        "date": "2026-08-12",
+        "itemCount": 3,
+        "employeeCount": 3,
+        "planCount": 1,
+        "plannedHours": 8
+      }
+    ]
+  }
+
+
+13. GET OVERTIME PLAN DETAIL
+============================
+
+Endpoint:
+  GET /api/overtime/plans/:planId
+
+Auth:
+  Required Japanese Management token
+
+Purpose:
+  View the plan header, all items, and plan activity logs.
+
+Success response:
+  Status: 200
+  {
+    "overtimePlan": {
+      "planId": "DEPTPLAN-...",
+      "departmentId": "DEP-PRODUCTION-RTD",
+      "status": "pending_approval",
+      "planScope": "department",
+      "itemCount": 5,
+      "plannedHours": 12,
+      "items": [
+        {
+          "planItemId": "PLANITEM-...",
+          "employeeId": "EMP-001",
+          "employeeName": "Juan D Cruz",
+          "plannedDate": "2026-08-12",
+          "plannedHours": 3,
+          "reason": "Production support"
+        }
+      ],
+      "logs": []
+    }
+  }
+
+
+14. LIST MY PENDING APPROVALS
+=============================
+
+Endpoint:
+  GET /api/overtime/plans/pending-approvals
+
+Auth:
+  Required Japanese Management token
+
+Purpose:
+  Return only pending Japanese Management approval records assigned to the
+  authenticated Japanese Management user ID.
+
+Supported query filters:
+  departmentId
+  periodType=weekly or monthly
+
+Example:
+  GET /api/overtime/plans/pending-approvals?departmentId=DEP-PRODUCTION-RTD&periodType=weekly
+
+Success response:
+  Status: 200
+  {
+    "pendingApprovals": [
+      {
+        "approvalId": "OTAPPROVAL-...",
+        "planId": "DEPTPLAN-...",
+        "stepOrder": 2,
+        "stepName": "Japanese Management Approval 1",
+        "approverRole": "japanese_management",
+        "approverUserId": "user-japanese-management-001",
+        "status": "pending",
+        "departmentId": "DEP-PRODUCTION-RTD",
+        "departmentName": "Production RTD",
+        "periodType": "weekly",
+        "periodStartDate": "2026-08-10",
+        "periodEndDate": "2026-08-16",
+        "planStatus": "pending_approval",
+        "planScope": "department"
+      }
+    ]
+  }
+
+No assigned pending approval:
+  {
+    "pendingApprovals": []
+  }
+
+
+15. GET DEPARTMENT PLAN APPROVAL DETAILS
+========================================
+
+Endpoint:
+  GET /api/overtime/plans/:planId/approval-details
+
+Auth:
+  Required Japanese Management token
+
+Purpose:
+  View the Department OT Plan and every approval record before taking action.
+
+Success response:
+  Status: 200
+  {
+    "overtimePlan": {
+      "planId": "DEPTPLAN-...",
+      "departmentId": "DEP-PRODUCTION-RTD",
+      "status": "pending_approval",
+      "planScope": "department",
+      "items": [],
+      "approvals": [
+        {
+          "approvalId": "OTAPPROVAL-...",
+          "stepOrder": 2,
+          "stepName": "Japanese Management Approval 1",
+          "approverRole": "japanese_management",
+          "approverUserId": "user-japanese-management-001",
+          "status": "pending",
+          "actedBy": "",
+          "actedAt": null,
+          "signatureFilePath": "",
+          "remarks": ""
+        }
+      ]
+    }
+  }
+
+
+16. APPROVE ASSIGNED JAPANESE MANAGEMENT STEP
+==============================================
+
+Endpoint:
+  PATCH /api/overtime/plans/:planId/approval/approve
+
+Auth:
+  Required Japanese Management token assigned to a pending step
+
+Postman body type:
+  raw JSON
+
+Request body:
+  {
+    "remarks": "Reviewed and approved by Japanese Management."
+  }
+
+Success response:
+  Status: 200
+  {
+    "overtimePlan": {
+      "planId": "DEPTPLAN-...",
+      "status": "pending_approval",
+      "approvals": [
+        {
+          "approvalId": "OTAPPROVAL-...",
+          "approverRole": "japanese_management",
+          "approverUserId": "user-japanese-management-001",
+          "status": "approved",
+          "actedBy": "user-japanese-management-001",
+          "actedByName": "Kenji Sato",
+          "actedAt": "2026-08-12T03:00:00.000Z",
+          "signatureFilePath": "users/user-japanese-management-001/....png",
+          "signatureMimeType": "image/png",
+          "remarks": "Reviewed and approved by Japanese Management."
+        }
+      ]
+    }
+  }
+
+Important behavior:
+  Approval snapshots the approver's currently saved signature path.
+  The Department Plan remains pending_approval after Japanese Management acts.
+  HR/Admin performs the final approval after all preliminary approvals finish.
+  Preliminary Supervisor and Japanese Management approvals may be completed in
+  any order. Each user can act only on the step assigned to that user ID.
+
+Common errors:
+  SIGNATURE_REQUIRED
+  NOT_ASSIGNED_APPROVER
+  PLAN_NOT_PENDING_APPROVAL
+  APPROVAL_ALREADY_PROCESSED
+
+
+17. RETURN DEPARTMENT PLAN FOR REVISION
+=======================================
+
+Endpoint:
+  PATCH /api/overtime/plans/:planId/approval/reject
+
+Auth:
+  Required Japanese Management token assigned to a pending step
+
+Request body:
+  {
+    "remarks": "Please correct the employee hours and submit the plan again."
+  }
+
+Success response:
+  Status: 200
+  {
+    "overtimePlan": {
+      "planId": "DEPTPLAN-...",
+      "status": "returned_for_revision",
+      "rejectionReason": "Please correct the employee hours and submit the plan again.",
+      "approvals": [
+        {
+          "approverRole": "japanese_management",
+          "status": "rejected",
+          "actedBy": "user-japanese-management-001",
+          "remarks": "Please correct the employee hours and submit the plan again."
+        }
+      ]
+    }
+  }
+
+Important:
+  Remarks are required.
+  Returning the plan marks the acting approval rejected and skips the remaining
+  pending approval records for that submission attempt.
+
+Common errors:
+  REJECTION_REMARKS_REQUIRED
+  NOT_ASSIGNED_APPROVER
+  PLAN_NOT_PENDING_APPROVAL
+
+
+18. LIST ACTUAL OT PERIODS
+==========================
+
+Endpoint:
+  GET /api/overtime/actual-periods
+
+Auth:
+  Required Japanese Management token
+
+Supported query filters:
+  status=open or finalized
+  departmentId
+  dateFrom
+  dateTo
+
+Example:
+  GET /api/overtime/actual-periods?departmentId=DEP-PRODUCTION-RTD&status=open&dateFrom=2026-08-10&dateTo=2026-08-16
+
+Success response:
+  Status: 200
+  {
+    "actualPeriods": [
+      {
+        "actualPeriodId": "ACTUALPERIOD-...",
+        "sourceDepartmentPlanId": "DEPTPLAN-...",
+        "departmentId": "DEP-PRODUCTION-RTD",
+        "departmentName": "Production RTD",
+        "periodType": "weekly",
+        "periodStartDate": "2026-08-10",
+        "periodEndDate": "2026-08-16",
+        "status": "open",
+        "entryCount": 5,
+        "plannedHours": 12,
+        "actualHours": 11.5
+      }
+    ]
+  }
+
+
+19. GET ACTUAL OT PERIOD DETAILS
+================================
+
+Endpoint:
+  GET /api/overtime/actual-periods/:actualPeriodId
+
+Auth:
+  Required Japanese Management token
+
+Purpose:
+  View all Actual OT entries, employee comments, and adjustment audit records.
+  Japanese Management cannot modify them.
+
+Success response:
+  Status: 200
+  {
+    "actualPeriod": {
+      "actualPeriodId": "ACTUALPERIOD-...",
+      "sourceDepartmentPlanId": "DEPTPLAN-...",
+      "status": "open",
+      "entries": [
+        {
+          "actualEntryId": "ACTUALENTRY-...",
+          "employeeId": "EMP-001",
+          "employeeName": "Juan D Cruz",
+          "actualDate": "2026-08-12",
+          "plannedHours": 3,
+          "actualHours": 2.5,
+          "varianceHours": -0.5,
+          "plannedReason": "Production support",
+          "lastAdjustmentRemarks": "Matched the timekeeping record.",
+          "comments": [],
+          "adjustments": []
+        }
+      ]
+    }
+  }
+
+
+20. GET FINAL APPROVED OT PLAN EXCEL
+====================================
+
+Endpoint:
+  GET /api/overtime/plans/:planId/final-document
+
+Auth:
+  Required Japanese Management token
+
+Request body:
+  {}
+
+Success response:
+  Status: 200
+  {
+    "finalDocument": {
+      "documentId": "OTDOCUMENT-...",
+      "planId": "DEPTPLAN-...",
+      "filePath": "final-documents/DEPTPLAN-.../OTDOCUMENT-....xlsx",
+      "fileType": "xlsx",
+      "status": "ready",
+      "signedUrl": "https://...",
+      "expiresInSeconds": 300
+    }
+  }
+
+Important:
+  The URL is temporary. The Excel remains in private Supabase Storage.
+  Japanese Management can download but cannot generate or replace this file.
+
+Common errors:
+  FINAL_DOCUMENT_NOT_FOUND
+  FINAL_DOCUMENT_NOT_READY
+
+
+21. GET FINAL ACTUAL OT EXCEL
+=============================
+
+Endpoint:
+  GET /api/overtime/actual-periods/:actualPeriodId/final-document
+
+Auth:
+  Required Japanese Management token
+
+Request body:
+  {}
+
+Success response:
+  Status: 200
+  {
+    "finalDocument": {
+      "documentId": "ACTUALDOCUMENT-...",
+      "actualPeriodId": "ACTUALPERIOD-...",
+      "filePath": "actual-documents/ACTUALPERIOD-.../ACTUALDOCUMENT-....xlsx",
+      "fileType": "xlsx",
+      "status": "ready",
+      "signedUrl": "https://...",
+      "expiresInSeconds": 300
+    }
+  }
+
+Important:
+  HR/Admin must finalize the Actual OT period and generate the file first.
+  Japanese Management has download-only access.
+
+Common errors:
+  ACTUAL_DOCUMENT_NOT_FOUND
+  ACTUAL_DOCUMENT_NOT_READY
+
+
+RECOMMENDED JAPANESE MANAGEMENT TESTING FLOW
+============================================
+
+1. Admin creates an active japanese_management account.
+2. Admin uploads its signature with POST /api/users/signature.
+3. Admin or HR includes the user ID in an active department approval route.
+4. Japanese Management logs in with POST /api/auth/login.
+5. Confirm the signature with GET /api/users/signature.
+6. List assigned work with GET /api/overtime/plans/pending-approvals.
+7. Inspect the plan with GET /api/overtime/plans/:planId/approval-details.
+8. Approve or return the assigned step.
+9. After HR/Admin final approval and manual document generation, download the
+   approved Plan Excel.
+10. View generated Actual OT records.
+11. After HR/Admin finalizes Actual OT, download the final Actual OT Excel.

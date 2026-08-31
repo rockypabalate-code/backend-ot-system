@@ -1,0 +1,1362 @@
+USER / EMPLOYEE API GUIDE
+=========================
+
+Project: backend-code
+Workspace path:
+  C:\Users\SCAN\system\backend
+
+Last synchronized with the application routes, services, and PostgreSQL schema:
+  2026-08-19
+
+Base URL
+--------
+Local default:
+  http://localhost:3000
+
+Employee route groups:
+  /api/auth
+  /api/overtime
+  /api/users
+  /api/notifications
+
+All request and response bodies use JSON unless an endpoint explicitly says
+multipart/form-data.
+
+
+AUTHENTICATION AND ERROR FORMAT
+===============================
+
+Protected endpoints require:
+  Authorization: Bearer <token>
+
+Tokens are returned by:
+  POST /api/auth/login
+
+Default token expiry:
+  1 hour, unless AUTH_TOKEN_EXPIRES_IN_SECONDS is changed.
+
+Normal API error shape:
+  {
+    "message": "Readable error message.",
+    "code": "MACHINE_READABLE_CODE"
+  }
+
+Validation and authorization errors may include code. Unexpected server errors
+return Status 500 with:
+  {
+    "message": "Internal server error."
+  }
+
+
+CURRENT DATABASE MODEL FOR AN EMPLOYEE
+=======================================
+
+The current PostgreSQL database was checked on 2026-08-19. The employee API is
+backed by these relationships:
+
+  users.id
+    -> employees.user_id
+    -> user_signatures.user_id
+
+  overtime_plans.plan_id
+    -> overtime_plan_items.plan_id
+    -> overtime_plan_logs.plan_id
+    -> overtime_plan_signature_records.plan_id
+    -> notifications.plan_id
+
+  approved Department OT Plan
+    -> overtime_actual_periods.source_department_plan_id
+    -> overtime_actual_entries.actual_period_id
+    -> overtime_actual_comments.actual_entry_id
+
+Important database constraints:
+  users.role:
+    admin, user, hr, supervisor, japanese_management
+
+  users.status:
+    active, pending, inactive
+
+  employees.shift:
+    day, night
+
+  employees.status:
+    active, inactive
+
+  overtime_plans.period_type:
+    weekly, monthly
+
+  overtime_plans.plan_scope:
+    employee, department
+
+  overtime_plans.status:
+    draft
+    submitted
+    submitted_to_supervisor
+    supervisor_returned
+    supervisor_accepted
+    pending_approval
+    returned_for_revision
+    approved
+    rejected
+    closed
+
+  overtime_plan_items.planned_hours:
+    must be greater than 0
+
+  overtime_plan_signature_records.status:
+    active, superseded
+
+  notifications:
+    one notification per recipient and plan log
+
+The employee-level account role is "user". A user can log in only when the user
+account is active and it is linked to an employee profile. The authentication
+middleware checks this relationship again on protected requests.
+
+Employee names and email come from users. The employees table stores work-profile
+data and links to users through user_id. Supervisor assignment uses
+employees.supervisor_user_id. The legacy manager_id column may still exist in an
+upgraded database, but it is not used by the current employee API response.
+
+
+CURRENT EMPLOYEE ENDPOINT SUMMARY
+=================================
+
+Authentication and profile:
+  POST  /api/auth/login
+  GET   /api/auth/me
+  GET   /api/overtime/employees/me
+  GET   /api/users/signature
+
+Preferred employee plan workflow:
+  GET    /api/overtime/plans
+  GET    /api/overtime/plans/items
+  GET    /api/overtime/plans/calendar
+  GET    /api/overtime/plans/:planId
+  POST   /api/overtime/plans/draft
+  PUT    /api/overtime/plans/:planId/draft
+  PATCH  /api/overtime/plans/:planId/submit-and-sign
+  PATCH  /api/overtime/plans/:planId/withdraw
+  DELETE /api/overtime/plans/:planId
+
+Supported granular or compatibility plan endpoints:
+  POST   /api/overtime/plans
+  PATCH  /api/overtime/plans/:planId
+  POST   /api/overtime/plans/:planId/items
+  POST   /api/overtime/plans/:planId/items/bulk
+  PATCH  /api/overtime/plans/:planId/items/:itemId
+  DELETE /api/overtime/plans/:planId/items/:itemId
+  PATCH  /api/overtime/plans/:planId/submit
+  PATCH  /api/overtime/plans/:planId/sign
+
+Notifications:
+  GET   /api/notifications
+  GET   /api/notifications/unread-count
+  PATCH /api/notifications/read-all
+  PATCH /api/notifications/plans/:planId/read
+  PATCH /api/notifications/actual-periods/:actualPeriodId/read
+  PATCH /api/notifications/:notificationId/read
+
+Employee Actual OT access:
+  GET  /api/overtime/actual-periods
+  GET  /api/overtime/actual-periods/:actualPeriodId
+  POST /api/overtime/actual-entries/:actualEntryId/comments
+
+Normal users cannot upload signatures, edit Actual OT hours, approve plans,
+manage departments/employees/routes, generate final documents, or access admin
+endpoints.
+
+
+ACCOUNT SETUP PREREQUISITES
+===========================
+
+The account must be prepared before employee testing. Account creation and
+signature upload are Admin-only; employee profile creation is available to Admin
+or HR.
+
+1. Create an active user with role "user".
+
+   POST /api/admin/users
+   or the compatibility route:
+   POST /api/auth/register
+
+2. Create or link the employee profile.
+
+   POST /api/overtime/employees
+
+   Example Admin/HR body:
+   {
+     "userId": "user-...",
+     "departmentId": "DEP-RTD",
+     "position": "Operator",
+     "shift": "day",
+     "employmentType": "regular",
+     "supervisorUserId": "supervisor-user-..."
+   }
+
+3. Assign the employee signature as an Admin.
+
+   POST /api/users/signature
+
+   Body type:
+     multipart/form-data
+
+   Fields:
+     userId     Text    users.id, not employees.employee_id
+     signature  File    PNG or JPEG, maximum 2 MB
+
+The signature is required by the preferred submit-and-sign endpoint. The image
+is stored privately; the database stores its file path and MIME type.
+
+
+1. LOGIN
+========
+
+Endpoint:
+  POST /api/auth/login
+
+Auth:
+  None
+
+Request body:
+  {
+    "email": "juan@example.com",
+    "password": "Password@123"
+  }
+
+Success:
+  Status 200
+  {
+    "token": "<jwt-token>",
+    "user": {
+      "id": "user-...",
+      "firstName": "Juan",
+      "middleName": "D",
+      "lastName": "Cruz",
+      "name": "Juan D Cruz",
+      "email": "juan@example.com",
+      "role": "user",
+      "status": "active",
+      "hasEmployeeProfile": true,
+      "employeeId": "EMP-..."
+    }
+  }
+
+Common errors:
+  400 Email and password are required.
+  401 Invalid email or password.
+  403 ACCOUNT_NOT_ACTIVE
+  403 EMPLOYEE_PROFILE_REQUIRED
+
+
+2. GET AUTHENTICATED USER
+=========================
+
+Endpoint:
+  GET /api/auth/me
+
+Auth:
+  Required user token
+
+Success:
+  Status 200
+  {
+    "user": {
+      "id": "user-...",
+      "firstName": "Juan",
+      "middleName": "D",
+      "lastName": "Cruz",
+      "name": "Juan D Cruz",
+      "email": "juan@example.com",
+      "role": "user",
+      "status": "active",
+      "hasEmployeeProfile": true,
+      "employeeId": "EMP-..."
+    }
+  }
+
+
+3. GET MY EMPLOYEE PROFILE
+==========================
+
+Endpoint:
+  GET /api/overtime/employees/me
+
+Auth:
+  Required user token
+
+Success:
+  Status 200
+  {
+    "employee": {
+      "employeeId": "EMP-...",
+      "userId": "user-...",
+      "employeeNo": "EMP-001",
+      "firstName": "Juan",
+      "middleName": "D",
+      "lastName": "Cruz",
+      "fullName": "Juan D Cruz",
+      "email": "juan@example.com",
+      "departmentId": "DEP-RTD",
+      "departmentName": "RTD",
+      "position": "Operator",
+      "supervisorUserId": "supervisor-user-...",
+      "supervisorName": "Supervisor Name",
+      "shift": "day",
+      "employmentType": "regular",
+      "status": "active",
+      "userStatus": "active",
+      "createdAt": "2026-08-01T01:00:00.000Z"
+    }
+  }
+
+Error:
+  404 EMPLOYEE_NOT_FOUND
+
+
+4. GET MY SAVED SIGNATURE PREVIEW
+=================================
+
+Endpoint:
+  GET /api/users/signature
+
+Auth:
+  Required user token
+
+Success:
+  Status 200
+  {
+    "signature": {
+      "signatureId": "SIGNATURE-...",
+      "userId": "user-...",
+      "uploadedBy": "admin-user-...",
+      "signatureFilePath": "users/user-.../signature.png",
+      "mimeType": "image/png",
+      "status": "active",
+      "createdAt": "2026-08-01T01:00:00.000Z",
+      "updatedAt": "2026-08-01T01:00:00.000Z",
+      "signedUrl": "https://temporary-signed-url/...",
+      "expiresInSeconds": 300
+    }
+  }
+
+Notes:
+  The signedUrl is temporary and is for preview only.
+  A user cannot upload or replace their own signature.
+  The saved file path is copied into the plan signature audit record on submit.
+
+Errors:
+  404 No saved signature was found.
+  502 Unable to create a signature preview URL.
+
+
+5. LIST MY OVERTIME PLANS
+=========================
+
+Endpoint:
+  GET /api/overtime/plans
+
+Auth:
+  Required user token
+
+Supported query parameters:
+  status
+    One status, repeated status parameters, or comma-separated statuses.
+
+  periodType
+    weekly or monthly
+
+  planScope
+    employee or department
+
+  dateFrom
+    YYYY-MM-DD; includes plans whose period overlaps this date or later
+
+  dateTo
+    YYYY-MM-DD; includes plans whose period overlaps this date or earlier
+
+  year
+    1900 through 3000
+
+  month
+    1 through 12
+
+  limit
+    positive integer, maximum 100
+
+  offset
+    zero or a positive integer
+
+Example:
+  GET /api/overtime/plans?periodType=weekly&dateFrom=2026-08-01&dateTo=2026-08-31&status=draft,submitted_to_supervisor
+
+Success:
+  Status 200
+  {
+    "overtimePlans": [
+      {
+        "planId": "PLAN-...",
+        "departmentId": "DEP-RTD",
+        "departmentName": "RTD",
+        "periodType": "weekly",
+        "periodStartDate": "2026-08-17",
+        "periodEndDate": "2026-08-23",
+        "status": "draft",
+        "planScope": "employee",
+        "itemCount": 5,
+        "plannedHours": 10,
+        "createdBy": "user-...",
+        "remarks": "Weekly planned overtime",
+        "createdAt": "2026-08-18T01:00:00.000Z",
+        "updatedAt": "2026-08-18T01:00:00.000Z"
+      }
+    ]
+  }
+
+Employee list scoping:
+  The user sees employee plans they created.
+  The user also sees approved or closed department plans containing their items.
+  Once a department plan is approved or closed, the API collapses the source
+  employee rows so the same lifecycle is not displayed twice.
+
+
+6. LIST MY PLAN ITEMS
+=====================
+
+Endpoint:
+  GET /api/overtime/plans/items
+
+Auth:
+  Required user token
+
+Supported query parameters:
+  status, periodType, planScope, planId, dateFrom, dateTo, year, month,
+  limit, offset, approvedOnly=true
+
+Success:
+  Status 200
+  {
+    "overtimePlanItems": [
+      {
+        "planItemId": "PLANITEM-...",
+        "planId": "PLAN-...",
+        "employeeId": "EMP-...",
+        "employeeNo": "EMP-001",
+        "employeeName": "Juan D Cruz",
+        "plannedDate": "2026-08-17",
+        "plannedHours": 2,
+        "reason": "Production support",
+        "sourceEmployeePlanId": "",
+        "planStatus": "draft",
+        "planScope": "employee",
+        "periodType": "weekly"
+      }
+    ]
+  }
+
+The response is automatically restricted to the authenticated employee.
+Final approved/closed department entries replace their source employee entries
+to prevent duplicate rows.
+
+
+7. GET MY CALENDAR SUMMARY
+==========================
+
+Endpoint:
+  GET /api/overtime/plans/calendar
+
+Auth:
+  Required user token
+
+Supported query parameters:
+  status, periodType, planScope, planId, dateFrom, dateTo, year, month,
+  approvedOnly=true
+
+Success:
+  Status 200
+  {
+    "calendar": [
+      {
+        "date": "2026-08-17",
+        "itemCount": 1,
+        "employeeCount": 1,
+        "planCount": 1,
+        "plannedHours": 2,
+        "statuses": ["submitted_to_supervisor"]
+      }
+    ]
+  }
+
+For a normal user, itemCount, planCount, plannedHours, and statuses are scoped to
+that employee. Approved/closed department items replace finalized source items,
+which prevents the calendar from counting the same overtime lifecycle twice.
+
+
+8. CREATE AN EMPLOYEE DRAFT WITH ITEMS (PREFERRED)
+==================================================
+
+Endpoint:
+  POST /api/overtime/plans/draft
+
+Auth:
+  Required user token
+
+Purpose:
+  Atomically create the employee plan and all selected overtime entries. If any
+  item is invalid, no partial plan or entries are committed.
+
+Request body:
+  {
+    "periodType": "weekly",
+    "periodStartDate": "2026-08-17",
+    "periodEndDate": "2026-08-23",
+    "remarks": "Weekly planned overtime",
+    "items": [
+      {
+        "plannedDate": "2026-08-17",
+        "plannedHours": 2,
+        "reason": "Production support"
+      },
+      {
+        "plannedDate": "2026-08-19",
+        "plannedHours": 1.5,
+        "reason": "Month-end preparation"
+      }
+    ]
+  }
+
+Rules:
+  periodType, periodStartDate, periodEndDate, and a non-empty items array are required.
+  Maximum 100 items.
+  Each item requires plannedDate, plannedHours greater than 0, and reason.
+  Each plannedDate must be within the plan period.
+  The same date cannot appear twice in one employee draft.
+  The backend assigns departmentId, planScope=employee, and employeeId.
+
+Weekly period rule:
+  Start on Monday, end on Sunday, exactly 7 calendar days.
+
+Monthly period rule:
+  Start on the first day and end on the last day of the same month.
+
+Duplicate period rule:
+  Multiple drafts for the same employee and exact period are allowed.
+  A new draft is blocked if another plan for that user and exact period is already
+  submitted or in workflow, including returned workflow states, approved, or closed.
+
+Success:
+  Status 201
+  {
+    "overtimePlan": {
+      "planId": "PLAN-...",
+      "periodType": "weekly",
+      "periodStartDate": "2026-08-17",
+      "periodEndDate": "2026-08-23",
+      "status": "draft",
+      "planScope": "employee",
+      "itemCount": 2,
+      "plannedHours": 3.5,
+      "items": [],
+      "logs": []
+    }
+  }
+
+Important errors:
+  400 PLAN_ITEMS_REQUIRED
+  400 PLAN_ITEMS_LIMIT_EXCEEDED
+  400 INVALID_WEEKLY_PLAN_PERIOD
+  400 INVALID_WEEKLY_PLAN_START
+  400 INVALID_MONTHLY_PLAN_PERIOD
+  400 INVALID_MONTHLY_PLAN_RANGE
+  400 PLAN_ITEM_DATE_OUT_OF_RANGE
+  409 DUPLICATE_PLAN_ITEM_IN_REQUEST
+  409 DUPLICATE_ACTIVE_EMPLOYEE_PLAN
+
+
+9. REPLACE AN EMPLOYEE DRAFT (PREFERRED)
+========================================
+
+Endpoint:
+  PUT /api/overtime/plans/:planId/draft
+
+Auth:
+  Required user token
+
+Purpose:
+  Atomically replace the editable plan fields and the complete item list.
+
+Editable statuses:
+  draft
+  supervisor_returned
+  returned_for_revision
+
+Request body:
+  {
+    "periodType": "weekly",
+    "periodStartDate": "2026-08-17",
+    "periodEndDate": "2026-08-23",
+    "remarks": "Revised weekly plan",
+    "expectedUpdatedAt": "2026-08-18T01:00:00.000Z",
+    "items": [
+      {
+        "plannedDate": "2026-08-18",
+        "plannedHours": 2.5,
+        "reason": "Revised support schedule"
+      }
+    ]
+  }
+
+Concurrency rule:
+  expectedUpdatedAt is required and must equal the plan updatedAt value last read
+  by the client. This prevents one browser session from silently overwriting a
+  newer plan version.
+
+Success:
+  Status 200
+  {
+    "message": "Employee overtime draft saved successfully.",
+    "overtimePlan": {
+      "planId": "PLAN-...",
+      "status": "draft",
+      "updatedAt": "2026-08-18T02:00:00.000Z",
+      "items": [],
+      "logs": []
+    }
+  }
+
+Important errors:
+  400 PLAN_VERSION_REQUIRED
+  400 PLAN_NOT_EDITABLE
+  403 PLAN_DRAFT_ACCESS_DENIED
+  409 PLAN_VERSION_CONFLICT
+  409 DUPLICATE_ACTIVE_EMPLOYEE_PLAN
+
+
+10. GET PLAN DETAIL AND WORKFLOW PROGRESS
+=========================================
+
+Endpoint:
+  GET /api/overtime/plans/:planId
+
+Auth:
+  Required user token
+
+Access rules:
+  A user can read an employee plan they created.
+  A user can read an approved/closed department plan containing their employee.
+  For someone else's department plan, only that employee's items are returned.
+
+Success for an owned employee plan:
+  Status 200
+  {
+    "overtimePlan": {
+      "planId": "PLAN-...",
+      "status": "submitted_to_supervisor",
+      "planScope": "employee",
+      "itemCount": 2,
+      "plannedHours": 3.5,
+      "items": [],
+      "logs": [],
+      "workflowProgress": {
+        "departmentPlanStatus": "",
+        "stages": [
+          {
+            "key": "draft_created",
+            "label": "Plan created",
+            "state": "completed",
+            "detail": "Your employee overtime plan was created.",
+            "completedAt": "2026-08-18T01:00:00.000Z"
+          },
+          {
+            "key": "supervisor_review",
+            "label": "Supervisor review",
+            "state": "current",
+            "detail": "Waiting for your supervisor to review the plan.",
+            "completedAt": null
+          },
+          {
+            "key": "department_consolidation",
+            "state": "pending"
+          },
+          {
+            "key": "final_approval",
+            "state": "pending"
+          }
+        ]
+      }
+    }
+  }
+
+Workflow stage states:
+  pending
+  current
+  completed
+  action_required
+
+Errors:
+  403 You do not have permission to access this overtime plan.
+  404 PLAN_NOT_FOUND
+
+
+11. SUBMIT AND SIGN ATOMICALLY (PREFERRED)
+==========================================
+
+Endpoint:
+  PATCH /api/overtime/plans/:planId/submit-and-sign
+
+Auth:
+  Required user token
+
+Purpose:
+  Submit the employee plan to the supervisor and create the employee signature
+  audit record in one database transaction.
+
+Request body:
+  {
+    "submissionRemarks": "Submitted for supervisor review.",
+    "signatureRemarks": "I confirm these planned overtime entries."
+  }
+
+Compatibility body:
+  {
+    "remarks": "Submitted and confirmed."
+  }
+
+The single remarks value is used for both actions when separate values are not sent.
+
+Prerequisites:
+  The plan belongs to the authenticated user.
+  The plan scope is employee.
+  Status is draft, supervisor_returned, or returned_for_revision.
+  The plan contains at least one item.
+  The user and employee records are active.
+  An Admin has assigned an active saved signature to the user.
+  No other active employee plan exists for the same employee and exact period.
+  No approved/closed Department OT Plan already finalizes that exact period.
+
+Success:
+  Status 200
+  {
+    "message": "Employee overtime plan submitted and signed successfully.",
+    "plan": {
+      "planId": "PLAN-...",
+      "status": "submitted_to_supervisor",
+      "submittedBy": "user-...",
+      "submittedAt": "2026-08-18T03:00:00.000Z"
+    },
+    "signatureRecord": {
+      "signatureRecordId": "PLANSIGNATURE-...",
+      "planId": "PLAN-...",
+      "employeeId": "EMP-...",
+      "signatureOwnerUserId": "user-...",
+      "actedByUserId": "user-...",
+      "signerRole": "employee",
+      "confirmationMethod": "self",
+      "signatureFilePath": "users/user-.../signature.png",
+      "signatureMimeType": "image/png",
+      "signedAt": "2026-08-18T03:00:00.000Z",
+      "remarks": "I confirm these planned overtime entries.",
+      "status": "active"
+    }
+  }
+
+Atomic behavior:
+  If submission validation or signature creation fails, the full transaction is
+  rolled back. The plan is not left half-submitted without its signature record.
+
+Important errors:
+  400 PLAN_HAS_NO_ITEMS
+  400 PLAN_SUBMIT_NOT_ALLOWED
+  400 SIGNATURE_REQUIRED
+  400 EMPLOYEE_NOT_ACTIVE
+  403 PLAN_SUBMIT_AND_SIGN_FORBIDDEN
+  409 DUPLICATE_ACTIVE_EMPLOYEE_PLAN
+  409 PLAN_PERIOD_ALREADY_FINALIZED
+
+
+12. WITHDRAW A SUBMISSION
+=========================
+
+Endpoint:
+  PATCH /api/overtime/plans/:planId/withdraw
+
+Auth:
+  Required user token
+
+Purpose:
+  Withdraw the employee plan before the supervisor has reviewed it and return it
+  to draft for editing or deletion.
+
+Request body:
+  {
+    "remarks": "I need to revise the planned dates."
+  }
+
+Alternative field:
+  reason may be used instead of remarks.
+
+Rules:
+  A reason is required.
+  The plan must belong to the authenticated user.
+  The plan scope must be employee.
+  Status must be exactly submitted_to_supervisor.
+
+Success:
+  Status 200
+  {
+    "message": "Employee overtime plan withdrawn successfully.",
+    "plan": {
+      "planId": "PLAN-...",
+      "status": "draft",
+      "submittedBy": "",
+      "submittedAt": null
+    }
+  }
+
+Database effects are atomic:
+  Status returns to draft.
+  submitted_by and submitted_at are cleared.
+  rejection_reason is cleared.
+  Active plan signature records become superseded.
+  A submission_withdrawn activity log is created.
+  Eligible recipients receive a notification from that plan log.
+
+Important errors:
+  400 PLAN_WITHDRAW_REMARKS_REQUIRED
+  400 PLAN_WITHDRAW_NOT_ALLOWED
+  403 PLAN_WITHDRAW_FORBIDDEN
+  404 PLAN_NOT_FOUND
+
+Once the supervisor accepts or returns the plan, withdrawal is no longer allowed.
+
+
+13. DELETE MY PLAN
+==================
+
+Endpoint:
+  DELETE /api/overtime/plans/:planId
+
+Auth:
+  Required user token
+
+The plan must belong to the authenticated user.
+
+Deletable statuses:
+  draft
+  supervisor_returned
+  returned_for_revision
+  rejected
+
+Not deletable directly:
+  submitted_to_supervisor
+  supervisor_accepted
+  pending_approval
+  approved
+  closed
+
+To delete a plan still waiting for supervisor review:
+  1. PATCH /api/overtime/plans/:planId/withdraw
+  2. DELETE /api/overtime/plans/:planId
+
+Success:
+  Status 200
+  {
+    "message": "Overtime plan deleted successfully.",
+    "overtimePlan": {
+      "planId": "PLAN-..."
+    }
+  }
+
+Deleting the plan cascades its plan items, logs, notifications, and plan signature
+records according to the current database foreign keys.
+
+Important error:
+  400 PLAN_DELETE_NOT_ALLOWED
+
+
+14. GRANULAR PLAN AND ITEM ENDPOINTS
+====================================
+
+These endpoints remain supported. For the current employee frontend, prefer the
+atomic draft endpoints because they avoid partial saves.
+
+14.1 Create an empty plan
+-------------------------
+
+  POST /api/overtime/plans
+
+  Body:
+  {
+    "periodType": "weekly",
+    "periodStartDate": "2026-08-17",
+    "periodEndDate": "2026-08-23",
+    "remarks": "Weekly planned overtime"
+  }
+
+  The backend assigns the employee department and planScope=employee.
+
+14.2 Update plan fields
+-----------------------
+
+  PATCH /api/overtime/plans/:planId
+
+  Editable statuses:
+    draft, supervisor_returned, returned_for_revision
+
+  Allowed employee fields:
+    periodType, periodStartDate, periodEndDate, remarks
+
+  departmentId changes are ignored for role user.
+
+14.3 Add one item
+-----------------
+
+  POST /api/overtime/plans/:planId/items
+
+  Body:
+  {
+    "plannedDate": "2026-08-17",
+    "plannedHours": 2,
+    "reason": "Production support"
+  }
+
+  Aliases:
+    date instead of plannedDate
+    totalHours instead of plannedHours
+
+  The employeeId is assigned from the authenticated employee profile.
+
+14.4 Add items in bulk
+----------------------
+
+  POST /api/overtime/plans/:planId/items/bulk
+
+  Body:
+  {
+    "items": [
+      {
+        "plannedDate": "2026-08-17",
+        "plannedHours": 2,
+        "reason": "Production support"
+      }
+    ]
+  }
+
+  Maximum 100 items per request.
+
+14.5 Update one item
+--------------------
+
+  PATCH /api/overtime/plans/:planId/items/:itemId
+
+  Allowed fields:
+    plannedDate or date
+    plannedHours or totalHours
+    reason
+
+  A user cannot move an item to another employee.
+
+14.6 Delete one item
+--------------------
+
+  DELETE /api/overtime/plans/:planId/items/:itemId
+
+  The plan must belong to the user and be editable.
+
+Common granular endpoint errors:
+  400 PLAN_NOT_EDITABLE
+  400 PLAN_ITEM_DATE_OUT_OF_RANGE
+  400 INVALID_PLANNED_HOURS
+  403 employee ownership error
+  404 plan or item not found
+  409 DUPLICATE_PLAN_ITEM
+  409 DUPLICATE_PLAN_ITEM_IN_REQUEST
+
+
+15. LEGACY SEPARATE SUBMIT AND SIGN ENDPOINTS
+=============================================
+
+These routes remain supported for compatibility. New employee clients should use
+PATCH /api/overtime/plans/:planId/submit-and-sign.
+
+15.1 Submit only
+----------------
+
+  PATCH /api/overtime/plans/:planId/submit
+
+  Body:
+  {
+    "remarks": "Submitted for review."
+  }
+
+  Result status:
+    submitted_to_supervisor
+
+15.2 Sign an already submitted plan
+-----------------------------------
+
+  PATCH /api/overtime/plans/:planId/sign
+
+  Body:
+  {
+    "remarks": "I confirm and sign this Employee OT Plan."
+  }
+
+  Signing records the saved signature file path. It does not upload a new image
+  and does not change the submitted_to_supervisor status.
+
+Separate calls are not atomic together. If submit succeeds but sign fails, the
+plan can remain submitted without an active employee signature. The preferred
+submit-and-sign endpoint prevents this state.
+
+
+16. LIST NOTIFICATIONS
+======================
+
+Endpoint:
+  GET /api/notifications
+
+Auth:
+  Required user token
+
+Query parameters:
+  unreadOnly=true
+  limit=1..100       default 20
+  offset=0 or higher default 0
+
+Success:
+  Status 200
+  {
+    "notifications": [
+      {
+        "notificationId": "NOTIFICATION-...",
+        "recipientUserId": "user-...",
+        "actorUserId": "supervisor-user-...",
+        "actorName": "Supervisor Name",
+        "planId": "PLAN-...",
+        "logId": "PLANLOG-...",
+        "type": "supervisor_returned",
+        "title": "Supervisor returned the plan",
+        "message": "Please revise the reason for August 18.",
+        "readAt": null,
+        "createdAt": "2026-08-18T04:00:00.000Z",
+        "planStatus": "supervisor_returned",
+        "periodStartDate": "2026-08-17",
+        "periodEndDate": "2026-08-23"
+      }
+    ],
+    "pagination": {
+      "limit": 20,
+      "offset": 0,
+      "total": 1
+    },
+    "unreadCount": 1
+  }
+
+Plan notification targets include targetType "plan", planId, and logId.
+Actual OT notification targets include targetType "actual_overtime",
+actualPeriodId, optional actualEntryId and actualDate, and actualActivityId.
+Actual OT notification types are actual_hours_updated, actual_comment_added,
+and actual_period_finalized.
+
+Notifications are database-backed activity notifications. They are loaded
+through normal HTTP requests; no realtime connection is required.
+
+
+17. GET UNREAD NOTIFICATION COUNT
+=================================
+
+Endpoint:
+  GET /api/notifications/unread-count
+
+Success:
+  Status 200
+  {
+    "unreadCount": 3
+  }
+
+
+18. MARK NOTIFICATIONS AS READ
+==============================
+
+Mark one notification:
+  PATCH /api/notifications/:notificationId/read
+
+  Success:
+  {
+    "notification": {
+      "notificationId": "NOTIFICATION-...",
+      "readAt": "2026-08-18T05:00:00.000Z"
+    }
+  }
+
+Mark all notifications for one plan:
+  PATCH /api/notifications/plans/:planId/read
+
+  Success:
+  {
+    "updatedCount": 2
+  }
+
+Mark all notifications for one Actual OT period:
+  PATCH /api/notifications/actual-periods/:actualPeriodId/read
+
+  Success:
+  {
+    "updatedCount": 2
+  }
+
+Mark every notification read:
+  PATCH /api/notifications/read-all
+
+  Success:
+  {
+    "updatedCount": 5
+  }
+
+Each read operation is restricted by recipient_user_id. A user cannot mark
+another user's notification as read.
+
+
+19. LIST MY ACTUAL OT PERIODS
+=============================
+
+Endpoint:
+  GET /api/overtime/actual-periods
+
+Auth:
+  Required user token
+
+Purpose:
+  Return Actual OT periods generated from fully approved Department OT Plans that
+  contain entries for the authenticated employee.
+
+Supported query parameters:
+  status=open or finalized
+  departmentId
+  dateFrom=YYYY-MM-DD
+  dateTo=YYYY-MM-DD
+
+Success:
+  Status 200
+  {
+    "actualPeriods": [
+      {
+        "actualPeriodId": "ACTUALPERIOD-...",
+        "sourceDepartmentPlanId": "DEPTPLAN-...",
+        "departmentId": "DEP-RTD",
+        "departmentName": "RTD",
+        "periodType": "weekly",
+        "periodStartDate": "2026-08-17",
+        "periodEndDate": "2026-08-23",
+        "status": "open",
+        "entryCount": 2,
+        "plannedHours": 3.5,
+        "actualHours": 3.5
+      }
+    ]
+  }
+
+Counts and hours are scoped to the authenticated employee.
+
+
+20. GET MY ACTUAL OT PERIOD DETAIL
+==================================
+
+Endpoint:
+  GET /api/overtime/actual-periods/:actualPeriodId
+
+Auth:
+  Required user token
+
+Success:
+  Status 200
+  {
+    "actualPeriod": {
+      "actualPeriodId": "ACTUALPERIOD-...",
+      "status": "open",
+      "entryCount": 1,
+      "plannedHours": 2,
+      "actualHours": 0,
+      "entries": [
+        {
+          "actualEntryId": "ACTUALENTRY-...",
+          "sourcePlanItemId": "PLANITEM-...",
+          "sourceEmployeePlanId": "PLAN-...",
+          "employeeId": "EMP-...",
+          "actualDate": "2026-08-21",
+          "plannedHours": 2,
+          "actualHours": 0,
+          "varianceHours": 0,
+          "isPending": true,
+          "plannedReason": "Production support",
+          "periodStatus": "open",
+          "comments": []
+        }
+      ]
+    }
+  }
+
+A normal user receives only their own entries and comments. Internal adjustment
+history is returned only to Admin, HR, Supervisor, and Japanese Management.
+An untouched open entry dated today or later has isPending true. Its actualHours
+and varianceHours are both 0 until Supervisor, HR, or Admin records the result.
+
+
+21. COMMENT ON MY ACTUAL OT ENTRY
+=================================
+
+Endpoint:
+  POST /api/overtime/actual-entries/:actualEntryId/comments
+
+Auth:
+  Required user token
+
+Request body:
+  {
+    "remarks": "Please verify the recorded Actual OT hours."
+  }
+
+Rules:
+  The entry must belong to the authenticated employee.
+  The Actual OT period must still be open.
+  remarks is required and cannot exceed 1000 characters.
+
+Success:
+  Status 201
+  {
+    "message": "Actual OT comment added successfully.",
+    "comment": {
+      "commentId": "ACTUALCOMMENT-...",
+      "actualEntryId": "ACTUALENTRY-...",
+      "userId": "user-...",
+      "userName": "Juan D Cruz",
+      "userRole": "user",
+      "remarks": "Please verify the recorded Actual OT hours.",
+      "createdAt": "2026-08-18T06:00:00.000Z"
+    }
+  }
+
+Important errors:
+  400 ACTUAL_OVERTIME_COMMENT_REQUIRED
+  400 ACTUAL_OVERTIME_COMMENT_TOO_LONG
+  400 ACTUAL_OVERTIME_FINALIZED
+  403 ACTUAL_OVERTIME_ACCESS_FORBIDDEN
+  404 ACTUAL_OVERTIME_ENTRY_NOT_FOUND
+
+Normal users cannot call:
+  PATCH /api/overtime/actual-entries/:actualEntryId
+
+
+EMPLOYEE PLAN STATUS AND ACTION MATRIX
+======================================
+
+Status                    Edit   Submit   Withdraw   Delete
+------                    ----   ------   --------   ------
+draft                     yes    yes      no         yes
+submitted_to_supervisor   no     no       yes        no
+submitted                 no     no       no         no
+supervisor_returned       yes    yes      no         yes
+supervisor_accepted       no     no       no         no
+pending_approval          no     no       no         no
+returned_for_revision     yes    yes      no         yes
+approved                  no     no       no         no
+rejected                  no     no       no         yes
+closed                    no     no       no         no
+
+The legacy submitted status exists in the database for compatibility but is not
+the normal employee-to-supervisor flow.
+
+
+RECOMMENDED FRONTEND WORKFLOW
+=============================
+
+1. POST /api/auth/login
+2. Store the JWT and send it as Authorization: Bearer <token>.
+3. GET /api/auth/me
+4. GET /api/overtime/employees/me
+5. GET /api/users/signature
+6. GET /api/overtime/plans with the selected date filters.
+7. POST /api/overtime/plans/draft to create the plan and entries atomically.
+8. GET /api/overtime/plans/:planId and retain updatedAt.
+9. PUT /api/overtime/plans/:planId/draft with expectedUpdatedAt when editing.
+10. PATCH /api/overtime/plans/:planId/submit-and-sign after confirmation.
+11. Refresh plan detail, plan list, calendar, and notifications after mutations.
+12. Allow PATCH /withdraw only while status is submitted_to_supervisor.
+13. Display workflowProgress from plan detail instead of reconstructing approval
+    stages in the frontend.
+14. Use GET /api/notifications or GET /api/notifications/unread-count on normal
+    browser refresh or client refetch; realtime is not required.
+
+
+FRONTEND IMPLEMENTATION NOTES
+=============================
+
+Use role === "user" for employee accounts.
+
+Use user.hasEmployeeProfile and user.employeeId from login or /api/auth/me to
+confirm account readiness. Load the complete employee profile from
+GET /api/overtime/employees/me.
+
+Do not ask a normal user to select departmentId or employeeId. The backend derives
+both from the authenticated employee profile and prevents cross-employee writes.
+
+Use the preferred atomic draft routes for the calendar editor. Use the granular
+item endpoints only when a client intentionally saves each row separately.
+
+Use submit-and-sign as the normal submission action. The legacy submit and sign
+routes are documented only for compatibility and manual API testing.
+
+After a successful withdrawal, treat the returned plan as draft and refetch its
+workflowProgress. The previous active signature record is superseded and a new
+signature record will be created on the next submit-and-sign operation.
+
+Use updatedAt as a concurrency version when replacing a draft. On
+PLAN_VERSION_CONFLICT, reload the latest detail before allowing another save.
+
+The API intentionally exposes planId in URLs such as:
+  /employee/plans/PLAN-...
+
+This is normal resource routing. Authorization is enforced on every detail and
+mutation endpoint; knowing a plan ID does not grant access.
+
+
+QUICK POSTMAN TEST FLOW
+=======================
+
+1. Log in as employee:
+   POST /api/auth/login
+
+2. Verify account links:
+   GET /api/auth/me
+   GET /api/overtime/employees/me
+   GET /api/users/signature
+
+3. Create a complete draft:
+   POST /api/overtime/plans/draft
+
+4. Read detail and copy updatedAt:
+   GET /api/overtime/plans/:planId
+
+5. Optional atomic edit:
+   PUT /api/overtime/plans/:planId/draft
+
+6. Submit and sign:
+   PATCH /api/overtime/plans/:planId/submit-and-sign
+
+7. Verify workflow and notification data:
+   GET /api/overtime/plans/:planId
+   GET /api/notifications
+
+8. Test withdrawal before supervisor review:
+   PATCH /api/overtime/plans/:planId/withdraw
+
+9. Edit/resubmit or delete the returned draft.
+
+10. After a Department OT Plan receives final approval, test employee Actual OT:
+    GET  /api/overtime/actual-periods
+    GET  /api/overtime/actual-periods/:actualPeriodId
+    POST /api/overtime/actual-entries/:actualEntryId/comments
+
+For Admin, Supervisor, Japanese Management, signature document, and full Actual OT
+testing details, use the corresponding guide files in this project.

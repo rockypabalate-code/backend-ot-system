@@ -1,0 +1,647 @@
+SIGNATURE FEATURE API TESTING GUIDE
+===================================
+
+Roles covered:
+  Employee/User
+  Supervisor
+  Admin/HR
+
+Base URL:
+  http://localhost:3000
+
+All endpoints require:
+  Authorization: Bearer <role-token>
+
+
+ACTUAL TEST DATA
+================
+
+Use this RTD group consistently:
+
+{
+  "departmentId": "DEP-PRODUCTION-RTD",
+  "employeeUserId": "user-1784594747663",
+  "employeeId": "EMP-1784596149743-x43k4u",
+  "employeeEmail": "quest.rtd.employee.1@qdmcph.com",
+  "supervisorUserId": "user-1784593992162",
+  "supervisorEmployeeId": "EMP-1784605014697-wfusn8",
+  "supervisorEmail": "rtd.quest.supervisor@qdmcph.com",
+  "adminUserId": "user-1783921262438",
+  "adminEmail": "quest-dental.admin@qdmcph.com",
+  "approvalRouteId": "OTROUTE-1784602784586-hng3kf",
+  "japaneseManagementUserId": "user-1784594183528"
+}
+
+Test signature file:
+
+{
+  "testSignaturePath": "C:\\Users\\SCAN\\.codex\\generated_images\\019fa205-ba87-7a81-8eb7-7cfbe8455aae\\exec-b4eaeae1-db6b-475d-89da-deb0a416ccf6.png"
+}
+
+Important:
+  The Admin test signature is already uploaded.
+  There is no active HR account, so use Admin for final approval.
+  The RTD route includes Japanese Management user user-1784594183528.
+  Japanese Management must approve before Admin can complete final approval.
+
+Runtime values to collect during testing:
+
+{
+  "employeePlanId": "Copy planId from the Employee OT Plan response",
+  "departmentPlanId": "Copy planId from the Department OT Plan response"
+}
+
+Replace :planId in endpoint URLs with the correct copied plan ID.
+
+
+REQUIRED TEST ORDER
+===================
+
+1. Admin uploads signatures for the Employee and Supervisor.
+2. Employee OT Plan is submitted_to_supervisor.
+3. Employee signs, or Supervisor signs on behalf.
+4. Supervisor accepts the Employee OT Plan.
+5. Supervisor creates the Department OT Plan.
+6. Supervisor starts the Department approval route.
+7. Assigned preliminary approvers approve.
+8. Admin completes final approval.
+9. Admin lists approved Department OT Plans.
+10. Admin manually generates the final Excel for the selected plan.
+11. Authorized user retrieves the Excel signed URL.
+
+
+1. ADMIN UPLOADS EMPLOYEE SIGNATURE
+===================================
+
+Endpoint:
+  POST /api/users/signature
+
+Auth:
+  Required admin token
+
+Postman body type:
+  form-data
+
+Request body structure:
+
+{
+  "userId": "user-1784594747663",
+  "signature": "<File: C:\\Users\\SCAN\\.codex\\generated_images\\019fa205-ba87-7a81-8eb7-7cfbe8455aae\\exec-b4eaeae1-db6b-475d-89da-deb0a416ccf6.png>"
+}
+
+In Postman, configure the fields as:
+  userId     Text    user-1784594747663
+  signature  File    Select the TEST ONLY PNG
+
+Do not send this request as raw JSON. The curly-brace object above only shows
+the complete form-data input structure.
+
+Success response:
+
+{
+  "message": "Signature saved for the target user successfully.",
+  "signature": {
+    "signatureId": "SIGNATURE-...",
+    "userId": "user-1784594747663",
+    "uploadedBy": "user-1783921262438",
+    "signatureFilePath": "users/user-1784594747663/....png",
+    "mimeType": "image/png",
+    "status": "active",
+    "signedUrl": "https://...",
+    "expiresInSeconds": 300
+  }
+}
+
+
+2. ADMIN UPLOADS SUPERVISOR SIGNATURE
+=====================================
+
+Endpoint:
+  POST /api/users/signature
+
+Auth:
+  Required admin token
+
+Postman body type:
+  form-data
+
+Request body structure:
+
+{
+  "userId": "user-1784593992162",
+  "signature": "<File: select the same TEST ONLY PNG>"
+}
+
+Success response:
+
+{
+  "message": "Signature saved for the target user successfully.",
+  "signature": {
+    "userId": "user-1784593992162",
+    "uploadedBy": "user-1783921262438",
+    "signatureFilePath": "users/user-1784593992162/....png",
+    "mimeType": "image/png",
+    "status": "active",
+    "signedUrl": "https://...",
+    "expiresInSeconds": 300
+  }
+}
+
+
+3. EMPLOYEE GETS OWN SIGNATURE PREVIEW
+======================================
+
+Endpoint:
+  GET /api/users/signature
+
+Auth:
+  Required Employee token for user-1784594747663
+
+Request body:
+
+{}
+
+Success response:
+
+{
+  "signature": {
+    "userId": "user-1784594747663",
+    "uploadedBy": "user-1783921262438",
+    "signatureFilePath": "users/user-1784594747663/....png",
+    "mimeType": "image/png",
+    "status": "active",
+    "signedUrl": "https://...",
+    "expiresInSeconds": 300
+  }
+}
+
+
+4. EMPLOYEE SIGNS OWN EMPLOYEE OT PLAN
+======================================
+
+Prerequisite:
+  Employee OT Plan status must be submitted_to_supervisor.
+  Use the Employee OT Plan ID, not the Department OT Plan ID.
+
+Endpoint:
+  PATCH /api/overtime/plans/:employeePlanId/sign
+
+Auth:
+  Required Employee token for user-1784594747663
+
+Request body:
+
+{
+  "remarks": "I confirm this Employee OT Plan for the RTD weekly period."
+}
+
+Success response:
+
+{
+  "message": "Employee overtime plan signed successfully.",
+  "plan": {
+    "planId": "PLAN-...",
+    "planScope": "employee",
+    "status": "submitted_to_supervisor"
+  },
+  "signatureRecord": {
+    "signatureRecordId": "PLANSIGNATURE-...",
+    "employeeId": "EMP-1784596149743-x43k4u",
+    "signatureOwnerUserId": "user-1784594747663",
+    "actedByUserId": "user-1784594747663",
+    "signerRole": "employee",
+    "confirmationMethod": "self",
+    "signatureFilePath": "users/user-1784594747663/....png",
+    "signatureMimeType": "image/png",
+    "status": "active"
+  }
+}
+
+
+5. SUPERVISOR GETS OWN SIGNATURE PREVIEW
+========================================
+
+Endpoint:
+  GET /api/users/signature
+
+Auth:
+  Required Supervisor token for user-1784593992162
+
+Request body:
+
+{}
+
+Success response:
+
+{
+  "signature": {
+    "userId": "user-1784593992162",
+    "uploadedBy": "user-1783921262438",
+    "signatureFilePath": "users/user-1784593992162/....png",
+    "mimeType": "image/png",
+    "status": "active",
+    "signedUrl": "https://...",
+    "expiresInSeconds": 300
+  }
+}
+
+
+6. SUPERVISOR SIGNS ON BEHALF OF EMPLOYEE
+=========================================
+
+Use this only instead of Employee self-signing. Do not perform both during the
+same normal test unless you are testing signature superseding.
+
+Prerequisite:
+  Employee OT Plan status must be submitted_to_supervisor.
+  Employee must be assigned to user-1784593992162.
+
+Endpoint:
+  PATCH /api/overtime/plans/:employeePlanId/sign
+
+Auth:
+  Required Supervisor token for user-1784593992162
+
+Request body:
+
+{
+  "employeeId": "EMP-1784596149743-x43k4u",
+  "remarks": "RTD Employee 1 verbally confirmed the Employee OT Plan."
+}
+
+Success response:
+
+{
+  "message": "Employee overtime plan signed successfully.",
+  "plan": {
+    "planId": "PLAN-...",
+    "status": "submitted_to_supervisor"
+  },
+  "signatureRecord": {
+    "employeeId": "EMP-1784596149743-x43k4u",
+    "signatureOwnerUserId": "user-1784594747663",
+    "actedByUserId": "user-1784593992162",
+    "signerRole": "supervisor",
+    "confirmationMethod": "supervisor_on_behalf",
+    "signatureFilePath": "users/user-1784594747663/....png",
+    "status": "active"
+  }
+}
+
+
+7. SUPERVISOR ACCEPTS SIGNED EMPLOYEE OT PLAN
+=============================================
+
+Endpoint:
+  PATCH /api/overtime/plans/:employeePlanId/supervisor-accept
+
+Auth:
+  Required Supervisor token for user-1784593992162
+
+Request body:
+
+{
+  "remarks": "RTD Employee 1 signed plan is accepted."
+}
+
+Success response:
+
+{
+  "overtimePlan": {
+    "planId": "PLAN-...",
+    "planScope": "employee",
+    "status": "supervisor_accepted",
+    "supervisorReviewedBy": "user-1784593992162",
+    "supervisorReviewedAt": "2026-08-..."
+  }
+}
+
+
+8. SUPERVISOR CREATES DEPARTMENT OT PLAN
+========================================
+
+Endpoint:
+  POST /api/overtime/plans/department/from-drafts
+
+Auth:
+  Required Supervisor token for user-1784593992162
+
+Request body:
+
+{
+  "departmentId": "DEP-PRODUCTION-RTD",
+  "periodType": "weekly",
+  "periodStartDate": "2026-08-03",
+  "periodEndDate": "2026-08-09",
+  "remarks": "Compiled RTD Department OT Plan for approval."
+}
+
+Important:
+  The actual field is periodType, not planType.
+
+Success response:
+
+{
+  "overtimePlan": {
+    "planId": "DEPTPLAN-...",
+    "departmentId": "DEP-PRODUCTION-RTD",
+    "planScope": "department",
+    "status": "draft",
+    "items": [
+      {
+        "employeeId": "EMP-1784596149743-x43k4u",
+        "sourceEmployeePlanId": "PLAN-..."
+      }
+    ]
+  }
+}
+
+Copy the returned DEPTPLAN-... value as departmentPlanId.
+
+
+9. SUPERVISOR STARTS DEPARTMENT APPROVAL
+========================================
+
+Endpoint:
+  PATCH /api/overtime/plans/:departmentPlanId/start-approval
+
+Auth:
+  Required Supervisor token for user-1784593992162
+
+Request body:
+
+{
+  "remarks": "Submit the signed RTD Department OT Plan for assigned approval."
+}
+
+Success response:
+
+{
+  "overtimePlan": {
+    "planId": "DEPTPLAN-...",
+    "routeId": "OTROUTE-1784602784586-hng3kf",
+    "status": "pending_approval",
+    "currentApproverRole": "supervisor"
+  }
+}
+
+
+10. SUPERVISOR APPROVES DEPARTMENT PLAN STEP
+============================================
+
+Endpoint:
+  PATCH /api/overtime/plans/:departmentPlanId/approval/approve
+
+Auth:
+  Required Supervisor token for user-1784593992162
+
+Request body:
+
+{
+  "remarks": "RTD Supervisor approval completed."
+}
+
+Success response:
+
+{
+  "overtimePlan": {
+    "planId": "DEPTPLAN-...",
+    "status": "pending_approval",
+    "approvals": [
+      {
+        "approverRole": "supervisor",
+        "status": "approved",
+        "actedBy": "user-1784593992162",
+        "signatureFilePath": "users/user-1784593992162/....png",
+        "signatureMimeType": "image/png"
+      }
+    ]
+  }
+}
+
+Current RTD route note:
+  Japanese Management user-1784594183528 must approve after this step. Admin
+  must first upload that user's signature through POST /api/users/signature.
+
+
+11. ADMIN GETS OWN SIGNATURE PREVIEW
+====================================
+
+Endpoint:
+  GET /api/users/signature
+
+Auth:
+  Required Admin token for user-1783921262438
+
+Request body:
+
+{}
+
+Success response:
+
+{
+  "signature": {
+    "userId": "user-1783921262438",
+    "signatureFilePath": "users/user-1783921262438/f690b855-cdf2-4f57-9c83-70add0d966ef.png",
+    "mimeType": "image/png",
+    "status": "active",
+    "signedUrl": "https://...",
+    "expiresInSeconds": 300
+  }
+}
+
+
+12. ADMIN COMPLETES FINAL APPROVAL
+==================================
+
+Prerequisite:
+  Supervisor and Japanese Management preliminary approvals must be complete.
+
+Endpoint:
+  PATCH /api/overtime/plans/:departmentPlanId/approval/approve
+
+Auth:
+  Required Admin token for user-1783921262438
+
+Request body:
+
+{
+  "remarks": "Final Admin approval completed for the RTD Department OT Plan."
+}
+
+Success response:
+
+{
+  "overtimePlan": {
+    "planId": "DEPTPLAN-...",
+    "status": "approved",
+    "approvedBy": "user-1783921262438"
+  }
+}
+
+Final approval creates the Actual OT records but does not generate Excel.
+
+
+13. ADMIN/HR MANUALLY GENERATES FINAL EXCEL
+============================================
+
+Select a final approved Department OT Plan, then generate its Excel document.
+
+Endpoint:
+  POST /api/overtime/plans/:departmentPlanId/final-document/generate
+
+Auth:
+  Required Admin or HR token
+
+Normal retry request body:
+
+{}
+
+Force replacement request body:
+
+{
+  "force": true
+}
+
+Success response:
+
+{
+  "message": "Final Excel document generated successfully.",
+  "finalDocument": {
+    "documentId": "OTDOCUMENT-...",
+    "planId": "DEPTPLAN-...",
+    "status": "ready",
+    "fileType": "xlsx",
+    "signedUrl": "https://...",
+    "expiresInSeconds": 300
+  }
+}
+
+
+14. SUPERVISOR OR ADMIN/HR GETS FINAL EXCEL
+===========================================
+
+Endpoint:
+  GET /api/overtime/plans/:departmentPlanId/final-document
+
+Auth:
+  Required Supervisor, Admin, or HR token
+
+Request body:
+
+{}
+
+Success response:
+
+{
+  "finalDocument": {
+    "documentId": "OTDOCUMENT-...",
+    "planId": "DEPTPLAN-...",
+    "filePath": "final-documents/DEPTPLAN-.../OTDOCUMENT-....xlsx",
+    "fileType": "xlsx",
+    "status": "ready",
+    "signedUrl": "https://...",
+    "expiresInSeconds": 300
+  }
+}
+
+Open signedUrl before it expires to download the private Excel file.
+
+
+15. CHECK DEPARTMENT APPROVAL SIGNATURE SNAPSHOTS
+=================================================
+
+Endpoint:
+  GET /api/overtime/plans/:departmentPlanId/approval-details
+
+Auth:
+  Required Supervisor, Admin, or HR token
+
+Request body:
+
+{}
+
+Success response:
+
+{
+  "overtimePlan": {
+    "planId": "DEPTPLAN-...",
+    "status": "approved",
+    "approvals": [
+      {
+        "approverRole": "supervisor",
+        "status": "approved",
+        "actedBy": "user-1784593992162",
+        "signatureFilePath": "users/user-1784593992162/....png",
+        "signatureMimeType": "image/png"
+      },
+      {
+        "approverRole": "hr",
+        "status": "approved",
+        "actedBy": "user-1783921262438",
+        "signatureFilePath": "users/user-1783921262438/f690b855-cdf2-4f57-9c83-70add0d966ef.png",
+        "signatureMimeType": "image/png"
+      }
+    ]
+  }
+}
+
+
+COMMON ERROR RESPONSES
+======================
+
+No saved signature:
+
+{
+  "message": "No saved signature was found.",
+  "code": "SIGNATURE_NOT_FOUND"
+}
+
+Missing admin upload target userId:
+
+{
+  "message": "Target user ID is required in the userId form-data field.",
+  "code": "SIGNATURE_USER_ID_REQUIRED"
+}
+
+Target user does not exist:
+
+{
+  "message": "Target user not found.",
+  "code": "SIGNATURE_USER_NOT_FOUND"
+}
+
+Employee or approver has no signature:
+
+{
+  "message": "Save a signature before approving this Department OT Plan.",
+  "code": "SIGNATURE_REQUIRED"
+}
+
+Employee Plan is not ready to sign:
+
+{
+  "message": "The employee overtime plan must be submitted to the supervisor before it can be signed.",
+  "code": "PLAN_NOT_READY_FOR_SIGNATURE"
+}
+
+Supervisor accepts an unsigned Employee Plan:
+
+{
+  "message": "Every employee in the overtime plan must confirm or be confirmed by the assigned supervisor before acceptance.",
+  "code": "EMPLOYEE_SIGNATURE_REQUIRED"
+}
+
+Final Excel requested before final approval:
+
+{
+  "message": "The Department OT Plan must be fully approved before generating its final document.",
+  "code": "PLAN_NOT_APPROVED"
+}
+
+Final document is not ready:
+
+{
+  "message": "The final Excel document is not ready.",
+  "code": "FINAL_DOCUMENT_NOT_READY"
+}

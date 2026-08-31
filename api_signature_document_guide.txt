@@ -1,0 +1,205 @@
+SIGNATURE AND FINAL EXCEL API GUIDE
+===================================
+
+BASE REQUIREMENTS
+=================
+
+All endpoints require a Bearer token.
+
+Create these private Supabase Storage buckets:
+
+  signatures
+  overtime-documents
+
+Backend .env values:
+
+  SUPABASE_URL=<project-url>
+  SUPABASE_SERVICE_ROLE_KEY=<backend-service-role-key>
+  SUPABASE_SIGNATURE_BUCKET=signatures
+  SUPABASE_SIGNED_URL_TTL_SECONDS=300
+  SUPABASE_DOCUMENT_BUCKET=overtime-documents
+  SUPABASE_DOCUMENT_URL_TTL_SECONDS=300
+
+Never expose SUPABASE_SERVICE_ROLE_KEY in frontend code.
+
+
+1. ADMIN: SAVE OR UPDATE A USER SIGNATURE
+=========================================
+
+Endpoint:
+  POST /api/users/signature
+
+Auth:
+  Required admin token
+
+Body:
+  multipart/form-data
+
+Field:
+  userId     Text  <target user ID>
+  signature  File  <PNG or JPEG image>
+
+Rules:
+  Maximum size is 2 MB.
+  Only an admin can upload or replace signature images.
+  The target user must already exist.
+  The backend validates both MIME type and actual image bytes.
+  Updating a signature creates a new Storage path. Historical approval
+  snapshots continue to use their original path.
+
+
+2. GET MY SAVED SIGNATURE PREVIEW
+=================================
+
+Endpoint:
+  GET /api/users/signature
+
+Success:
+  Status 200
+
+The response includes signatureFilePath and a temporary signedUrl.
+
+
+3. SIGN AN EMPLOYEE OT PLAN
+===========================
+
+Endpoint:
+  PATCH /api/overtime/plans/:planId/sign
+
+Required plan status:
+  submitted_to_supervisor
+
+Employee self-confirmation body:
+
+  {
+    "remarks": "I confirm this overtime plan."
+  }
+
+Assigned supervisor confirmation on behalf body:
+
+  {
+    "employeeId": "EMP-...",
+    "remarks": "Employee verbally confirmed this overtime plan."
+  }
+
+The employee's saved signature image is used in both cases. For an on-behalf
+confirmation, the supervisor user ID, time, and required remarks are recorded.
+
+
+4. SUPERVISOR ACCEPTANCE
+========================
+
+Endpoint:
+  PATCH /api/overtime/plans/:planId/supervisor-accept
+
+The assigned supervisor can accept only after every employee in the plan has
+an active confirmation. Returning or resetting the plan supersedes its active
+employee confirmations.
+
+
+5. DEPARTMENT OT PLAN CREATION
+==============================
+
+Endpoint:
+  POST /api/overtime/plans/department/from-drafts
+
+Only supervisor-accepted employee plans with active employee signatures are
+copied. Each copied item retains sourceEmployeePlanId for signature auditing.
+
+
+6. DEPARTMENT APPROVAL SIGNATURES
+=================================
+
+Endpoint:
+  PATCH /api/overtime/plans/:planId/approval/approve
+
+Supervisor, Japanese Management, and HR/Admin must each save a signature
+before approving. The approval record snapshots the exact signature path and
+MIME type used at the time of approval.
+
+HR/Admin remains the final approval. After final approval commits, the backend
+does not generate the signed Excel document automatically. Admin or HR chooses
+when to generate it using the manual endpoint in Section 7.
+
+Successful final approval response includes only the approved plan:
+
+  {
+    "overtimePlan": {
+      "status": "approved"
+    }
+  }
+
+7. MANUALLY GENERATE OR RETRY FINAL EXCEL
+==========================================
+
+Endpoint:
+  POST /api/overtime/plans/:planId/final-document/generate
+
+Auth:
+  Admin or HR token
+
+Body for normal retry:
+
+  {}
+
+Body to replace an existing ready document:
+
+  {
+    "force": true
+  }
+
+The plan must have status "approved". Otherwise:
+
+  {
+    "message": "The Department OT Plan must be fully approved before generating its final document.",
+    "code": "PLAN_NOT_APPROVED"
+  }
+
+
+8. GET FINAL EXCEL DOWNLOAD
+===========================
+
+Endpoint:
+  GET /api/overtime/plans/:planId/final-document
+
+Auth:
+  Admin, HR, Japanese Management, or a supervisor from the plan department
+
+Success:
+  Status 200
+
+The response contains a temporary signedUrl for the private XLSX object.
+
+
+EXCEL CONTENT
+=============
+
+The generated workbook contains:
+
+  Department and plan period
+  Employee numbers and names
+  OT dates, planned hours, total hours, and reasons
+  Employee confirmation method and time
+  Embedded employee signature images
+  Approval roles, approvers, approval dates, and remarks
+  Embedded approver signature images
+  Signature Audit worksheet with record IDs, actors, and Storage paths
+
+The current workbook uses the backend's standardized layout. A company-provided
+Excel template can replace the layout later without changing the signing or
+approval records.
+
+
+IMPORTANT ERROR CODES
+=====================
+
+  SIGNATURE_REQUIRED
+  EMPLOYEE_SIGNATURE_REQUIRED
+  SIGNATURE_RECORDS_INCOMPLETE
+  APPROVAL_SIGNATURES_INCOMPLETE
+  FINAL_APPROVAL_SIGNATURE_MISSING
+  PLAN_NOT_APPROVED
+  FINAL_DOCUMENT_NOT_FOUND
+  FINAL_DOCUMENT_NOT_READY
+  FINAL_DOCUMENT_UPLOAD_FAILED
+  FINAL_DOCUMENT_URL_FAILED

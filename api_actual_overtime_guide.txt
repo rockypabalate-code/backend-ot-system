@@ -1,0 +1,459 @@
+ACTUAL OVERTIME API TESTING GUIDE
+=================================
+
+Base URL:
+  http://localhost:3000
+
+Database setup:
+  npm run db:create-actual-overtime
+
+The setup command creates only the Actual OT tables and indexes.
+
+
+FEATURE FLOW
+============
+
+1. Employee creates, submits, and signs an Employee OT Plan.
+2. Supervisor accepts the signed Employee OT Plan.
+3. Supervisor creates a Department OT Plan from accepted Employee OT Plans.
+4. Supervisor, Japanese Management, and HR/Admin complete assigned approvals.
+5. Final HR/Admin approval automatically creates one Actual OT period and one
+   Actual OT entry for every Department OT Plan item.
+6. Open entries dated today or later start as pending with actualHours 0,
+   varianceHours 0, and isPending true. Past-date entries keep the approved
+   planned-hours baseline when a period is generated after the work date.
+7. Assigned Supervisor, HR, or Admin confirms or adjusts daily Actual OT. Every
+   adjustment requires remarks and creates an immutable adjustment log.
+8. Employee can view only their own entries and add short comments. Employee
+   cannot change actual hours or download the department-wide Excel document.
+9. HR/Admin finalizes the completed period. Finalized records are locked.
+10. HR/Admin generates the final Actual OT Excel. The workbook includes actual
+    values, variances, adjustment history, comments, and approval signatures.
+
+Actual OT notifications:
+  Hours updates, comments, and period finalization create immutable activity
+  logs and database-backed notifications in the same transaction. Employees
+  receive changes to their own entries; employee comments notify the assigned
+  supervisor. Notifications use normal HTTP refresh, not realtime delivery.
+
+Important:
+  All generation operations are idempotent. Repeating final approval cannot
+  create duplicate Actual OT periods or duplicate entries.
+
+
+1. FINAL APPROVAL AUTOMATICALLY CREATES ACTUAL OT
+=================================================
+
+Endpoint:
+  PATCH /api/overtime/plans/:departmentPlanId/approval/approve
+
+Auth:
+  Required HR or Admin token for the final assigned approval
+
+Request body:
+  {
+    "remarks": "Final approval completed. Create the weekly Actual OT records."
+  }
+
+Relevant success response:
+  {
+    "overtimePlan": {
+      "planId": "DEPTPLAN-...",
+      "status": "approved",
+      "actualPeriod": {
+        "actualPeriodId": "ACTUALPERIOD-...",
+        "sourceDepartmentPlanId": "DEPTPLAN-...",
+        "departmentId": "DEP-...",
+        "periodType": "weekly",
+        "periodStartDate": "2026-08-03",
+        "periodEndDate": "2026-08-09",
+        "status": "open",
+        "entryCount": 5,
+        "plannedHours": 12,
+        "actualHours": 12
+      }
+    },
+    "finalDocument": {
+      "documentId": "OTDOCUMENT-...",
+      "status": "ready"
+    }
+  }
+
+The finalDocument above remains the approved OT Plan document. The final Actual
+OT document is generated separately after the Actual OT period is finalized.
+
+
+2. LIST ACCESSIBLE ACTUAL OT PERIODS
+====================================
+
+Endpoint:
+  GET /api/overtime/actual-periods
+
+Auth:
+  Required authenticated token
+
+Request body:
+  {}
+
+Optional query filters:
+  status=open
+  status=finalized
+  departmentId=DEP-...
+  dateFrom=2026-08-03
+  dateTo=2026-08-09
+
+Example:
+  GET /api/overtime/actual-periods?status=open&dateFrom=2026-08-03
+
+Success response:
+  {
+    "actualPeriods": [
+      {
+        "actualPeriodId": "ACTUALPERIOD-...",
+        "sourceDepartmentPlanId": "DEPTPLAN-...",
+        "departmentId": "DEP-...",
+        "departmentName": "Production",
+        "periodStartDate": "2026-08-03",
+        "periodEndDate": "2026-08-09",
+        "status": "open",
+        "entryCount": 5,
+        "plannedHours": 12,
+        "actualHours": 11.5
+      }
+    ]
+  }
+
+Access behavior:
+  User sees periods and totals only for their own employee entries.
+  Supervisor sees entries assigned to that supervisor in their department.
+  HR/Admin and Japanese Management have full read access.
+
+
+3. GET ACTUAL OT PERIOD AND DAILY ENTRIES
+=========================================
+
+Endpoint:
+  GET /api/overtime/actual-periods/:actualPeriodId
+
+Auth:
+  Required authenticated token
+
+Request body:
+  {}
+
+Success response:
+  {
+    "actualPeriod": {
+      "actualPeriodId": "ACTUALPERIOD-...",
+      "sourceDepartmentPlanId": "DEPTPLAN-...",
+      "status": "open",
+      "plannedHours": 12,
+      "actualHours": 11.5,
+      "entries": [
+        {
+          "actualEntryId": "ACTUALENTRY-...",
+          "employeeId": "EMP-...",
+          "employeeNo": "EMP-001",
+          "employeeName": "Juan D Cruz",
+          "actualDate": "2026-08-05",
+          "plannedHours": 3,
+          "actualHours": 2.5,
+          "varianceHours": -0.5,
+          "isPending": false,
+          "plannedReason": "Production support",
+          "lastAdjustmentRemarks": "Matched the timekeeping record.",
+          "comments": []
+        }
+      ]
+    }
+  }
+
+Supervisor, HR, Admin, and Japanese Management responses also include the
+adjustments array for each accessible entry. Employee responses do not expose
+the internal adjustment audit.
+
+For an untouched open entry dated today or later, the API returns actualHours 0,
+varianceHours 0, and isPending true. Once a Supervisor, HR, or Admin records the
+hours through the adjustment endpoint, isPending becomes false and varianceHours
+is calculated normally, including a valid negative variance for a confirmed zero.
+
+
+4. SUPERVISOR OR HR/ADMIN ADJUSTS DAILY ACTUAL OT
+=================================================
+
+Endpoint:
+  PATCH /api/overtime/actual-entries/:actualEntryId
+
+Auth:
+  Required Admin, HR, or assigned Supervisor token
+
+Request body:
+  {
+    "actualHours": 2.5,
+    "remarks": "Adjusted from 3 hours to 2.5 hours based on timekeeping."
+  }
+
+Allowed fields:
+  actualHours       Number from 0 to 24
+  remarks           Required for every adjustment
+
+Important:
+  Actual OT stores only the number of hours. Start and end time fields are not
+  supported.
+
+Success response:
+  {
+    "message": "Actual OT entry updated successfully.",
+    "actualEntry": {
+      "actualEntryId": "ACTUALENTRY-...",
+      "plannedHours": 3,
+      "actualHours": 2.5,
+      "varianceHours": -0.5,
+      "lastAdjustmentRemarks": "Adjusted from 3 hours to 2.5 hours based on timekeeping."
+    }
+  }
+
+Common errors:
+  ACTUAL_OVERTIME_ADJUSTMENT_REMARKS_REQUIRED
+  ACTUAL_OVERTIME_ADJUSTMENT_REQUIRED
+  INVALID_ACTUAL_HOURS
+  ACTUAL_OVERTIME_EDIT_FORBIDDEN
+  ACTUAL_OVERTIME_FINALIZED
+
+
+5. EMPLOYEE ADDS A COMMENT OR CONCERN
+=====================================
+
+Endpoint:
+  POST /api/overtime/actual-entries/:actualEntryId/comments
+
+Auth:
+  Required Employee token
+
+Request body:
+  {
+    "remarks": "The machine stopped early, so my actual overtime was shorter."
+  }
+
+Rules:
+  Employee can comment only on their own Actual OT entry.
+  Comments are append-only and limited to 1000 characters.
+  A comment does not change actual hours.
+  Comments cannot be added after period finalization.
+
+Success response:
+  Status: 201
+  {
+    "message": "Actual OT comment added successfully.",
+    "comment": {
+      "commentId": "ACTUALCOMMENT-...",
+      "actualEntryId": "ACTUALENTRY-...",
+      "userId": "user-...",
+      "userRole": "user",
+      "remarks": "The machine stopped early, so my actual overtime was shorter.",
+      "createdAt": "2026-08-05T11:30:00.000Z"
+    }
+  }
+
+
+6. HR/ADMIN FINALIZES THE ACTUAL OT PERIOD
+==========================================
+
+Endpoint:
+  PATCH /api/overtime/actual-periods/:actualPeriodId/finalize
+
+Auth:
+  Required Admin or HR token
+
+Request body:
+  {
+    "remarks": "Weekly timekeeping review is complete. Actual OT is final."
+  }
+
+Success response:
+  {
+    "message": "Actual OT period finalized successfully.",
+    "actualPeriod": {
+      "actualPeriodId": "ACTUALPERIOD-...",
+      "status": "finalized",
+      "finalizedBy": "user-...",
+      "finalizedAt": "2026-08-10T01:00:00.000Z",
+      "finalizationRemarks": "Weekly timekeeping review is complete. Actual OT is final."
+    }
+  }
+
+Important:
+  Finalization locks all Actual OT adjustments and new comments.
+  Finalization does not generate the Excel file automatically. After this
+  succeeds, call Section 7 to generate the final Actual OT Excel.
+
+
+7. HR/ADMIN GENERATES THE FINAL ACTUAL OT EXCEL
+===============================================
+
+Endpoint:
+  POST /api/overtime/actual-periods/:actualPeriodId/final-document/generate
+
+Auth:
+  Required Admin or HR token
+
+Normal request body:
+  {}
+
+Force replacement request body:
+  {
+    "force": true
+  }
+
+Success response:
+  {
+    "message": "Final Actual OT Excel document generated successfully.",
+    "finalDocument": {
+      "documentId": "ACTUALDOCUMENT-...",
+      "actualPeriodId": "ACTUALPERIOD-...",
+      "filePath": "actual-documents/ACTUALPERIOD-.../ACTUALDOCUMENT-....xlsx",
+      "fileType": "xlsx",
+      "status": "ready",
+      "signedUrl": "https://...",
+      "expiresInSeconds": 300
+    }
+  }
+
+Error before finalization:
+  {
+    "message": "The Actual OT period must be finalized before generating its Excel document.",
+    "code": "ACTUAL_OVERTIME_NOT_FINALIZED"
+  }
+
+
+8. GET THE FINAL ACTUAL OT EXCEL
+================================
+
+Endpoint:
+  GET /api/overtime/actual-periods/:actualPeriodId/final-document
+
+Auth:
+  Required Admin, HR, Supervisor, or Japanese Management token
+
+Request body:
+  {}
+
+Success response:
+  {
+    "finalDocument": {
+      "documentId": "ACTUALDOCUMENT-...",
+      "actualPeriodId": "ACTUALPERIOD-...",
+      "fileType": "xlsx",
+      "status": "ready",
+      "signedUrl": "https://...",
+      "expiresInSeconds": 300
+    }
+  }
+
+The signed URL is temporary. The Excel remains stored privately in the
+overtime-documents Supabase Storage bucket.
+
+
+9. ADMIN PERMANENTLY PURGES PLAN AND ACTUAL OT DATABASE DATA
+============================================================
+
+Endpoint:
+  POST /api/admin/overtime/plans/:departmentPlanId/purge-data
+
+Example endpoint:
+  POST /api/admin/overtime/plans/DEPTPLAN-1786400000000/purge-data
+
+Auth:
+  Required Admin token only
+
+Postman body type:
+  raw JSON
+
+Request body:
+  {
+    "adminPassword": "<current-admin-password>",
+    "confirmPlanId": "DEPTPLAN-1786400000000",
+    "remarks": "Permanently remove an incorrect approved OT record.",
+    "deleteSourceEmployeePlans": true,
+    "confirmKeepExcel": true
+  }
+
+Required confirmations:
+  adminPassword must be the current password of the logged-in Admin.
+  confirmPlanId must exactly match the departmentPlanId in the URL.
+  remarks is required and records the reason for the permanent deletion.
+  deleteSourceEmployeePlans must explicitly be true or false.
+  confirmKeepExcel must be true.
+
+deleteSourceEmployeePlans behavior:
+  true  Deletes the Department OT Plan and its linked source Employee OT Plans.
+  false Deletes the Department OT Plan but keeps its source Employee OT Plans.
+
+Success response:
+  {
+    "message": "OT Plan and Actual OT data were permanently deleted. Excel files were retained in Supabase Storage.",
+    "purgeAuditId": "OTPURGE-...",
+    "departmentPlanId": "DEPTPLAN-1786400000000",
+    "deleteSourceEmployeePlans": true,
+    "deleted": {
+      "departmentPlans": 1,
+      "employeePlans": 2,
+      "planItems": 8,
+      "planLogs": 5,
+      "approvalRecords": 3,
+      "signatureRecords": 2,
+      "actualPeriods": 1,
+      "actualEntries": 6,
+      "comments": 1,
+      "adjustmentLogs": 2,
+      "documentMetadataRecords": 3
+    },
+    "excelFilesDeleted": false,
+    "excelFilesRetained": true
+  }
+
+Database records deleted:
+  Linked Actual OT period, entries, employee comments, adjustment logs, and
+  Actual OT document metadata.
+  Department OT Plan, items, logs, approvals, signature records, and OT Plan
+  document metadata.
+  Linked source Employee OT Plans when deleteSourceEmployeePlans is true.
+
+Records kept:
+  Users, employee profiles, departments, approval routes, and saved user
+  signatures.
+  The generated Excel objects already stored in Supabase Storage.
+  One minimal overtime_purge_audits row containing the Admin, reason, selected
+  source-plan option, deletion counts, status, and date/time.
+
+Important permanent-deletion warning:
+  This action cannot restore the deleted database data.
+  The backend does not delete any Excel object from Supabase Storage.
+  The related document metadata is deleted, so the normal final-document GET
+  endpoints cannot locate the retained Excel after the purge. Retained files
+  must be managed directly in Supabase Storage.
+  A source Employee OT Plan shared by another Department OT Plan is protected
+  and causes PURGE_SOURCE_PLAN_REFERENCED_ELSEWHERE instead of partial deletion.
+
+Common errors:
+  ADMIN_PASSWORD_REQUIRED
+  INVALID_ADMIN_PASSWORD
+  PURGE_PLAN_CONFIRMATION_MISMATCH
+  PURGE_REMARKS_REQUIRED
+  PURGE_SOURCE_PLAN_CONFIRMATION_REQUIRED
+  PURGE_EXCEL_RETENTION_CONFIRMATION_REQUIRED
+  PURGE_TARGET_NOT_DEPARTMENT_PLAN
+  PURGE_SOURCE_PLAN_REFERENCED_ELSEWHERE
+  PLAN_NOT_FOUND
+
+
+RESET PROTECTION AFTER ACTUAL OT CREATION
+=========================================
+
+PATCH /api/overtime/plans/:planId/reset-status returns this error when the
+Department OT Plan already has a linked Actual OT period:
+
+  {
+    "message": "This Department OT Plan already has linked Actual OT and cannot be reset. Use the Admin purge-data endpoint for permanent cleanup.",
+    "code": "PLAN_HAS_ACTUAL_OVERTIME"
+  }

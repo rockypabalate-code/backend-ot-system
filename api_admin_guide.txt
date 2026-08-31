@@ -1,0 +1,1159 @@
+ADMIN AND HR COMPLETE API TESTING GUIDE
+Project: backend-code
+Workspace path: C:\Users\SCAN\system\backend
+
+Base URL
+--------
+Local default:
+  http://localhost:3000
+
+Purpose
+-------
+This guide covers all current Admin and HR endpoints. It begins with the final
+Department OT Plan approval workflow, followed by the complete route catalog.
+
+Protected endpoints require:
+  Authorization: Bearer <admin-or-hr-token>
+
+
+FINAL APPROVAL FLOW
+===================
+
+1. Admin or HR logs in.
+2. Admin or HR confirms that their saved signature exists.
+3. Admin or HR lists pending Department Plan approval records.
+4. Admin or HR opens the Department Plan approval details.
+5. Admin or HR verifies every Supervisor and Japanese Management step is approved.
+6. Admin or HR performs final approval.
+7. Backend changes the Department Plan to approved.
+8. Backend automatically creates the Actual OT period and daily entries.
+9. Admin or HR lists final approved Department Plans.
+10. Admin or HR manually generates the official signed OT Plan Excel when needed.
+
+
+1. ADMIN LOGIN
+==============
+
+Endpoint:
+  POST /api/auth/login
+
+Auth:
+  None
+
+Postman body type:
+  raw JSON
+
+Request body:
+  {
+    "email": "admin@example.com",
+    "password": "<current-admin-password>"
+  }
+
+Success response:
+  Status: 200
+  {
+    "token": "<admin-token>",
+    "user": {
+      "id": "user-admin-001",
+      "firstName": "QDMC",
+      "lastName": "ADMIN",
+      "email": "admin@example.com",
+      "role": "admin",
+      "status": "active"
+    }
+  }
+
+
+2. CHECK ADMIN SIGNATURE
+========================
+
+Endpoint:
+  GET /api/users/signature
+
+Auth:
+  Required Admin token
+
+Request body:
+  {}
+
+Success response:
+  Status: 200
+  {
+    "signature": {
+      "signatureId": "SIGNATURE-...",
+      "userId": "user-admin-001",
+      "uploadedBy": "user-admin-001",
+      "signatureFilePath": "users/user-admin-001/....png",
+      "mimeType": "image/png",
+      "status": "active",
+      "signedUrl": "https://...",
+      "expiresInSeconds": 300
+    }
+  }
+
+If no signature exists, an Admin must upload one for the target Admin/HR account
+before final approval:
+
+Endpoint:
+  POST /api/users/signature
+
+Auth:
+  Required Admin token
+
+Postman body type:
+  form-data
+
+Fields:
+  userId      Text  user-admin-001
+  signature   File  <select PNG or JPEG signature image>
+
+
+3. LIST PENDING DEPARTMENT PLAN APPROVALS
+=========================================
+
+Endpoint:
+  GET /api/overtime/plans/pending-approvals
+
+Auth:
+  Required Admin token
+
+Supported query filters:
+  departmentId
+  periodType=weekly or monthly
+
+Example:
+  GET /api/overtime/plans/pending-approvals?departmentId=DEP-PRODUCTION-RTD&periodType=weekly
+
+Request body:
+  {}
+
+Success response:
+  Status: 200
+  {
+    "pendingApprovals": [
+      {
+        "approvalId": "OTAPPROVAL-...",
+        "planId": "DEPTPLAN-...",
+        "stepOrder": 4,
+        "stepName": "HR/Admin Final Approval",
+        "approverRole": "hr",
+        "approverUserId": "",
+        "status": "pending",
+        "departmentId": "DEP-PRODUCTION-RTD",
+        "departmentName": "Production RTD",
+        "periodType": "weekly",
+        "periodStartDate": "2026-08-10",
+        "periodEndDate": "2026-08-16",
+        "planStatus": "pending_approval",
+        "planScope": "department"
+      }
+    ]
+  }
+
+Important Admin behavior:
+  Admin currently sees all pending approval records, including Supervisor,
+  Japanese Management, and HR/Admin steps.
+
+  Select the planId that has the pending HR/Admin final step. Then use the next
+  endpoint to confirm that all preliminary steps are already approved.
+
+  The final role is normally returned as "hr" because HR and Admin are stored
+  as one final approval group. Either an active HR or Admin account can complete
+  that final step.
+
+
+4. VERIFY SUPERVISOR AND JAPANESE MANAGEMENT APPROVALS
+======================================================
+
+Endpoint:
+  GET /api/overtime/plans/:planId/approval-details
+
+Example:
+  GET /api/overtime/plans/DEPTPLAN-1784610133556-bf20ex/approval-details
+
+Auth:
+  Required Admin token
+
+Request body:
+  {}
+
+Expected response before Admin final approval:
+  Status: 200
+  {
+    "overtimePlan": {
+      "planId": "DEPTPLAN-1784610133556-bf20ex",
+      "departmentId": "DEP-PRODUCTION-RTD",
+      "departmentName": "Production RTD",
+      "periodType": "weekly",
+      "periodStartDate": "2026-08-10",
+      "periodEndDate": "2026-08-16",
+      "status": "pending_approval",
+      "planScope": "department",
+      "itemCount": 5,
+      "plannedHours": 12,
+      "approvals": [
+        {
+          "stepOrder": 1,
+          "stepName": "Supervisor Approval",
+          "approverRole": "supervisor",
+          "status": "approved",
+          "actedBy": "user-supervisor-001",
+          "actedAt": "2026-08-12T01:00:00.000Z",
+          "signatureFilePath": "users/user-supervisor-001/....png"
+        },
+        {
+          "stepOrder": 2,
+          "stepName": "Japanese Management Approval 1",
+          "approverRole": "japanese_management",
+          "status": "approved",
+          "actedBy": "user-japanese-management-001",
+          "actedAt": "2026-08-12T02:00:00.000Z",
+          "signatureFilePath": "users/user-japanese-management-001/....png"
+        },
+        {
+          "stepOrder": 3,
+          "stepName": "Japanese Management Approval 2",
+          "approverRole": "japanese_management",
+          "status": "approved",
+          "actedBy": "user-japanese-management-002",
+          "actedAt": "2026-08-12T03:00:00.000Z",
+          "signatureFilePath": "users/user-japanese-management-002/....png"
+        },
+        {
+          "stepOrder": 4,
+          "stepName": "HR/Admin Final Approval",
+          "approverRole": "hr",
+          "status": "pending",
+          "actedBy": "",
+          "actedAt": null,
+          "signatureFilePath": ""
+        }
+      ]
+    }
+  }
+
+Admin may continue only when:
+  plan status is pending_approval
+  Supervisor approval status is approved
+  Every assigned Japanese Management approval status is approved
+  HR/Admin final approval status is pending
+  Admin has a saved signature
+
+
+5. ADMIN PERFORMS FINAL APPROVAL
+================================
+
+Endpoint:
+  PATCH /api/overtime/plans/:planId/approval/approve
+
+Example:
+  PATCH /api/overtime/plans/DEPTPLAN-1784610133556-bf20ex/approval/approve
+
+Auth:
+  Required Admin token
+
+Postman body type:
+  raw JSON
+
+Request body:
+  {
+    "remarks": "HR/Admin final approval completed after Supervisor and Japanese Management review."
+  }
+
+Success response:
+  Status: 200
+  {
+    "overtimePlan": {
+      "planId": "DEPTPLAN-1784610133556-bf20ex",
+      "departmentId": "DEP-PRODUCTION-RTD",
+      "status": "approved",
+      "planScope": "department",
+      "approvedBy": "user-admin-001",
+      "approvedByName": "QDMC ADMIN",
+      "approvedAt": "2026-08-12T04:00:00.000Z",
+      "approvals": [
+        {
+          "stepOrder": 4,
+          "stepName": "HR/Admin Final Approval",
+          "approverRole": "hr",
+          "status": "approved",
+          "actedBy": "user-admin-001",
+          "actedByName": "QDMC ADMIN",
+          "actedAt": "2026-08-12T04:00:00.000Z",
+          "signatureFilePath": "users/user-admin-001/....png",
+          "signatureMimeType": "image/png",
+          "remarks": "HR/Admin final approval completed after Supervisor and Japanese Management review."
+        }
+      ],
+      "actualPeriod": {
+        "actualPeriodId": "ACTUALPERIOD-...",
+        "sourceDepartmentPlanId": "DEPTPLAN-1784610133556-bf20ex",
+        "departmentId": "DEP-PRODUCTION-RTD",
+        "periodType": "weekly",
+        "periodStartDate": "2026-08-10",
+        "periodEndDate": "2026-08-16",
+        "status": "open",
+        "entryCount": 5,
+        "plannedHours": 12,
+        "actualHours": 12
+      }
+    }
+  }
+
+Automatic results of successful final approval:
+  Department Plan status becomes approved.
+  Admin signature path is copied into the final approval record.
+  One Actual OT period is created.
+  One Actual OT entry is created for every Department Plan item.
+  Each new actualHours value initially equals plannedHours.
+  No Excel document is generated until Admin or HR requests it manually.
+
+
+6. LIST FINAL APPROVED DEPARTMENT PLANS
+=======================================
+
+Endpoint:
+  GET /api/overtime/plans
+
+Auth:
+  Required Admin token
+
+Recommended query:
+  GET /api/overtime/plans?status=approved&planScope=department&limit=50&offset=0
+
+Request body:
+  {}
+
+Purpose:
+  Display Department Plans that completed the final HR/Admin approval. The
+  approvedBy, approvedByName, and approvedAt fields identify the final approver.
+
+Success response:
+  Status: 200
+  {
+    "overtimePlans": [
+      {
+        "planId": "DEPTPLAN-1784610133556-bf20ex",
+        "departmentId": "DEP-PRODUCTION-RTD",
+        "departmentName": "Production RTD",
+        "periodType": "weekly",
+        "periodStartDate": "2026-08-10",
+        "periodEndDate": "2026-08-16",
+        "status": "approved",
+        "planScope": "department",
+        "itemCount": 5,
+        "plannedHours": 12,
+        "approvedBy": "user-admin-001",
+        "approvedByName": "QDMC ADMIN",
+        "approvedAt": "2026-08-12T04:00:00.000Z"
+      }
+    ]
+  }
+
+
+7. MANUALLY GENERATE FINAL OT PLAN EXCEL
+=========================================
+
+Endpoint:
+  POST /api/overtime/plans/:planId/final-document/generate
+
+Example:
+  POST /api/overtime/plans/DEPTPLAN-1784610133556-bf20ex/final-document/generate
+
+Auth:
+  Required Admin or HR token
+
+Postman body type:
+  raw JSON
+
+Request body for first generation or retry:
+  {}
+
+Request body to replace an existing ready document:
+  {
+    "force": true
+  }
+
+Success response:
+  Status: 200
+  {
+    "message": "Final Excel document generated successfully.",
+    "finalDocument": {
+      "documentId": "OTDOCUMENT-...",
+      "planId": "DEPTPLAN-1784610133556-bf20ex",
+      "filePath": "final-documents/DEPTPLAN-1784610133556-bf20ex/OTDOCUMENT-....xlsx",
+      "fileType": "xlsx",
+      "generatedBy": "user-admin-001",
+      "generatedAt": "2026-08-13T04:00:00.000Z",
+      "status": "ready",
+      "signedUrl": "https://...",
+      "expiresInSeconds": 300
+    }
+  }
+
+Important:
+  The plan must have status approved and planScope department.
+  Use an empty body for normal generation. Use force=true only when replacing
+  an existing ready Excel document.
+
+
+8. GET GENERATED FINAL OT PLAN EXCEL
+=====================================
+
+Endpoint:
+  GET /api/overtime/plans/:planId/final-document
+
+Auth:
+  Required Admin, HR, Japanese Management, or department Supervisor token
+
+Request body:
+  {}
+
+Success response:
+  Status: 200
+  Returns finalDocument with a temporary signedUrl.
+
+
+COMMON FINAL APPROVAL ERRORS
+============================
+
+Preliminary approvals are not finished:
+  Status: 400
+  {
+    "message": "Supervisor and Japanese Management approvals must be completed before HR/Admin final approval.",
+    "code": "PRELIMINARY_APPROVALS_PENDING"
+  }
+
+Admin has no saved signature:
+  Status: 400
+  {
+    "message": "Save a signature before approving this Department OT Plan.",
+    "code": "SIGNATURE_REQUIRED"
+  }
+
+Plan is no longer pending approval:
+  Status: 400
+  {
+    "message": "Only department plans pending approval can be approved.",
+    "code": "PLAN_NOT_PENDING_APPROVAL"
+  }
+
+No pending final approval is available:
+  Status: 403
+  {
+    "message": "You are not assigned as a pending approver for this department OT plan.",
+    "code": "NOT_ASSIGNED_APPROVER"
+  }
+
+Approval was already processed:
+  Status: 409
+  {
+    "message": "This approval was already processed.",
+    "code": "APPROVAL_ALREADY_PROCESSED"
+  }
+
+Excel generation is separate from final approval. If generation fails, the
+Department Plan remains approved. Do not approve it again; retry Section 7.
+
+
+QUICK POSTMAN ORDER
+===================
+
+1. POST /api/auth/login
+2. GET /api/users/signature
+3. GET /api/overtime/plans/pending-approvals?periodType=weekly
+4. GET /api/overtime/plans/:planId/approval-details
+5. PATCH /api/overtime/plans/:planId/approval/approve
+6. GET /api/overtime/plans?status=approved&planScope=department&limit=50&offset=0
+7. POST /api/overtime/plans/:planId/final-document/generate
+8. GET /api/overtime/plans/:planId/final-document
+
+
+COMPLETE ADMIN/HR ENDPOINT CATALOG
+==================================
+
+The detailed final approval workflow is above. This catalog lists every current
+endpoint available to Admin and/or HR. Unless marked ADMIN ONLY, both roles can
+use the endpoint with:
+
+  Authorization: Bearer <admin-or-hr-token>
+
+Use raw JSON for JSON requests. GET and DELETE requests normally use no body.
+
+
+A. AUTHENTICATION AND OWN PROFILE
+=================================
+
+1. Login
+  POST /api/auth/login
+
+  {
+    "email": "admin@example.com",
+    "password": "<account-password>"
+  }
+
+2. Get authenticated account
+  GET /api/auth/me
+
+  Body: {}
+
+3. Get own saved signature preview
+  GET /api/users/signature
+
+  Body: {}
+
+  Returns the caller's signature metadata and temporary signedUrl.
+
+
+B. ADMIN-ONLY ACCOUNT AND SYSTEM ENDPOINTS
+==========================================
+
+HR cannot use the endpoints in this section.
+
+1. Admin dashboard
+  GET /api/admin/dashboard
+
+2. List accounts
+  GET /api/admin/users
+
+3. Create account
+  POST /api/admin/users
+
+  {
+    "firstName": "Juan",
+    "middleName": "D",
+    "lastName": "Cruz",
+    "email": "juan.cruz@example.com",
+    "password": "TemporaryPassword123!",
+    "role": "user",
+    "status": "active"
+  }
+
+  Allowed roles:
+    admin, hr, supervisor, japanese_management, user
+
+  Allowed statuses:
+    active, pending, inactive
+
+4. Legacy account creation route
+  POST /api/auth/register
+
+  Uses the same body as POST /api/admin/users. Prefer /api/admin/users.
+
+5. Update account
+  PATCH /api/admin/users/:userId
+
+  {
+    "firstName": "Juan",
+    "middleName": "Dela",
+    "lastName": "Cruz",
+    "email": "juan.cruz@example.com",
+    "role": "supervisor",
+    "status": "active"
+  }
+
+  Optional update fields:
+    firstName, middleName, lastName, email, password, role, status
+
+6. Delete unlinked account
+  DELETE /api/admin/users/:userId
+
+  Body: {}
+
+7. Force-delete linked account with Admin password confirmation
+  DELETE /api/admin/users/:userId/force
+
+  {
+    "adminPassword": "<current-admin-password>"
+  }
+
+8. Upload or replace a target user's signature
+  POST /api/users/signature
+
+  Postman body type: form-data
+
+  Fields:
+    userId      Text  user-1784593992162
+    signature   File  <select PNG or JPEG image>
+
+9. Delete only a target user's current saved signature
+  DELETE /api/users/signature/:userId
+
+  Example:
+    DELETE /api/users/signature/user-1784593992162
+
+  Request body:
+  {}
+
+  Success response:
+  {
+    "message": "Saved signature deleted successfully.",
+    "deletedSignature": {
+      "userId": "user-1784593992162",
+      "signatureFilePath": "users/user-1784593992162/....png"
+    },
+    "deletedBy": "user-admin-001",
+    "storageFileDeleted": true
+  }
+
+  Safety condition:
+    Deletion returns SIGNATURE_IN_USE when the image path is already recorded in
+    an Employee Plan confirmation or approval. This protects future signed Excel
+    generation. Uploading a replacement remains allowed and preserves old images.
+
+10. Start an audited impersonation session
+  POST /api/admin/impersonations
+
+  {
+    "targetUserId": "user-1784594747663",
+    "adminPassword": "<current-admin-password>",
+    "remarks": "Reproduce the employee dashboard issue reported to support."
+  }
+
+  Allowed target roles:
+    user, supervisor, japanese_management
+
+  Success response:
+  {
+    "message": "Admin impersonation session created successfully.",
+    "token": "<short-lived-target-token>",
+    "user": {
+      "id": "user-1784594747663",
+      "role": "user",
+      "status": "active",
+      "employeeId": "EMP-001"
+    },
+    "impersonation": {
+      "auditId": "IMPERSONATION-...",
+      "adminUserId": "user-admin-001",
+      "targetUserId": "user-1784594747663",
+      "targetRole": "user",
+      "remarks": "Reproduce the employee dashboard issue reported to support.",
+      "issuedAt": "2026-08-13T05:00:00.000Z",
+      "expiresAt": "2026-08-13T05:15:00.000Z",
+      "expiresInSeconds": 900
+    }
+  }
+
+  Important:
+    Keep the original Admin token in the frontend. Temporarily use the returned
+    token to view the API as the target account. Restore the original Admin token
+    to leave impersonation. The token is valid for 15 minutes by default and has
+    only the target role's permissions. Admin and HR accounts cannot be targets.
+
+11. Permanently purge linked OT Plan and Actual OT database data
+  POST /api/admin/overtime/plans/:departmentPlanId/purge-data
+
+  {
+    "adminPassword": "<current-admin-password>",
+    "confirmPlanId": "DEPTPLAN-1784610133556-bf20ex",
+    "remarks": "Permanent cleanup approved after verifying the retained Excel copy.",
+    "deleteSourceEmployeePlans": true,
+    "confirmKeepExcel": true
+  }
+
+  Important:
+    This permanently deletes linked OT database records. Existing Excel objects
+    in Supabase Storage are deliberately retained.
+
+
+C. DEPARTMENTS, EMPLOYEES, AND POLICIES
+=======================================
+
+1. List departments
+  GET /api/overtime/departments
+
+2. Create department
+  POST /api/overtime/departments
+
+  {
+    "departmentName": "Production RTD",
+    "parentDepartmentId": "",
+    "headEmployeeId": ""
+  }
+
+3. Update department
+  PATCH /api/overtime/departments/:departmentId
+
+  Auth:
+    Admin or HR
+
+  {
+    "departmentName": "Production RTD Updated",
+    "parentDepartmentId": "DEP-PRODUCTION",
+    "headEmployeeId": "EMP-001",
+    "status": "active"
+  }
+
+  Every field is optional, but at least one meaningful change should be sent.
+  Send an empty string for parentDepartmentId or headEmployeeId to clear it.
+  The head employee must belong to the department. Parent cycles are rejected.
+
+4. Delete an empty department
+  DELETE /api/overtime/departments/:departmentId
+
+  Auth:
+    ADMIN ONLY
+
+  Request body:
+  {}
+
+  The delete is blocked with DEPARTMENT_DELETE_REFERENCED while any child
+  department, employee, approval route, OT Plan, or Actual OT period uses it.
+
+5. List employees
+  GET /api/overtime/employees
+
+  Supported filters:
+    employeeId, userId, employeeNo, departmentId, supervisorUserId,
+    shift, employmentType, status
+
+  Example:
+    GET /api/overtime/employees?departmentId=DEP-PRODUCTION-RTD&status=active
+
+6. Get one employee
+  GET /api/overtime/employees/:employeeId
+
+7. Create or link employee profile
+  POST /api/overtime/employees
+
+  {
+    "employeeId": "EMP-001",
+    "userId": "user-1784594747663",
+    "employeeNo": "EMP-001",
+    "departmentId": "DEP-PRODUCTION-RTD",
+    "position": "Operator",
+    "supervisorUserId": "user-1784593992162",
+    "shift": "day",
+    "employmentType": "regular",
+    "status": "active"
+  }
+
+  Required fields:
+    userId, departmentId, shift
+
+8. Update employee profile
+  PATCH /api/overtime/employees/:employeeId
+
+  {
+    "departmentId": "DEP-PRODUCTION-RTD",
+    "position": "Senior Operator",
+    "supervisorUserId": "user-1784593992162",
+    "shift": "night",
+    "employmentType": "regular",
+    "status": "active"
+  }
+
+9. Delete an unreferenced employee profile
+  DELETE /api/overtime/employees/:employeeId
+
+  Auth:
+    ADMIN ONLY
+
+  Request body:
+  {}
+
+  Success response:
+  {
+    "employee": {
+      "employeeId": "EMP-001",
+      "userId": "user-1784594747663"
+    },
+    "userAccountRetained": true,
+    "message": "Employee profile deleted successfully. The linked user account was retained."
+  }
+
+  The delete is blocked with EMPLOYEE_DELETE_REFERENCED while the profile is a
+  department head/manager, supervises employees, or appears in OT Plan items,
+  signature records, or Actual OT entries. Remove or reassign those references
+  first. This endpoint never deletes the linked login account.
+
+10. List OT policies
+  GET /api/overtime/policies
+
+
+D. APPROVAL ROUTE MANAGEMENT
+============================
+
+1. List approval routes
+  GET /api/overtime/approval-routes
+
+  Supported filters:
+    departmentId, status=active or inactive
+
+  Example:
+    GET /api/overtime/approval-routes?departmentId=DEP-PRODUCTION-RTD&status=active
+
+2. Create approval route
+  POST /api/overtime/approval-routes
+
+  {
+    "departmentId": "DEP-PRODUCTION-RTD",
+    "routeName": "Production RTD OT Approval Route",
+    "status": "active",
+    "supervisorApproverUserId": "user-supervisor-001",
+    "japaneseManagementApproverUserIds": [
+      "user-japanese-001",
+      "user-japanese-002"
+    ]
+  }
+
+  A generic HR/Admin final step is added automatically when no specific final
+  HR/Admin user is supplied.
+
+3. Get approval route and assignments
+  GET /api/overtime/approval-routes/:routeId
+
+4. Add route assignment
+  POST /api/overtime/approval-routes/:routeId/assignments
+
+  {
+    "approverRole": "japanese_management",
+    "approverUserId": "user-japanese-003"
+  }
+
+  approverRole can be supervisor, japanese_management, hr, or admin. HR and
+  Admin are normalized as the final approval group.
+
+5. Delete route assignment
+  DELETE /api/overtime/approval-routes/:routeId/assignments/:assignmentId
+
+6. Activate or deactivate route
+  PATCH /api/overtime/approval-routes/:routeId/status
+
+  {
+    "status": "inactive"
+  }
+
+
+E. OT PLAN READ AND DASHBOARD ENDPOINTS
+=======================================
+
+1. List OT Plans
+  GET /api/overtime/plans
+
+  Supported filters:
+    status
+    periodType=weekly or monthly
+    departmentId
+    employeeId
+    planScope=employee or department
+    dateFrom or from or startDate
+    dateTo or to or endDate
+    year
+    month=1 through 12
+    currentApproverRole
+    currentApproverUserId
+    limit=1 through 100
+    offset=0 or greater
+
+  Example final-approved list:
+    GET /api/overtime/plans?status=approved&planScope=department&limit=50&offset=0
+
+2. Get one OT Plan with items and logs
+  GET /api/overtime/plans/:planId
+
+3. List OT Plan items
+  GET /api/overtime/plans/items
+
+  Supported filters:
+    planId, status, periodType, planScope, departmentId, employeeId,
+    createdBy, approvedOnly, currentApproverRole, currentApproverUserId,
+    dateFrom, dateTo, year, month, limit, offset
+
+  Example:
+    GET /api/overtime/plans/items?departmentId=DEP-PRODUCTION-RTD&approvedOnly=true&limit=50
+
+4. Get OT Plan calendar summary
+  GET /api/overtime/plans/calendar
+
+  Uses the same plan-item filters.
+
+5. Get Supervisor-style submission dashboard
+  GET /api/overtime/plans/supervisor-dashboard
+
+  Supported filters:
+    departmentId, supervisorUserId, includeUnassigned=true or false,
+    periodType, periodStartDate or startDate, periodEndDate or endDate
+
+  Example:
+    GET /api/overtime/plans/supervisor-dashboard?departmentId=DEP-PRODUCTION-RTD&periodType=weekly&periodStartDate=2026-08-10&periodEndDate=2026-08-16
+
+6. List pending assigned approval steps
+  GET /api/overtime/plans/pending-approvals
+
+  Supported filters:
+    departmentId, periodType
+
+7. Get Department Plan approval details
+  GET /api/overtime/plans/:planId/approval-details
+
+
+F. OT PLAN CREATION AND EDITING
+===============================
+
+1. Create Department OT Plan directly
+  POST /api/overtime/plans
+
+  {
+    "departmentId": "DEP-PRODUCTION-RTD",
+    "planScope": "department",
+    "periodType": "weekly",
+    "periodStartDate": "2026-08-10",
+    "periodEndDate": "2026-08-16",
+    "remarks": "Weekly Department OT Plan."
+  }
+
+2. Compile Department OT Plan from supervisor-accepted Employee Plans
+  POST /api/overtime/plans/department/from-drafts
+
+  {
+    "departmentId": "DEP-PRODUCTION-RTD",
+    "periodType": "weekly",
+    "periodStartDate": "2026-08-10",
+    "periodEndDate": "2026-08-16",
+    "remarks": "Compiled accepted employee plans."
+  }
+
+3. Update editable OT Plan information
+  PATCH /api/overtime/plans/:planId
+
+  {
+    "departmentId": "DEP-PRODUCTION-RTD",
+    "periodType": "weekly",
+    "periodStartDate": "2026-08-10",
+    "periodEndDate": "2026-08-16",
+    "remarks": "Updated plan remarks."
+  }
+
+4. Add one Plan item
+  POST /api/overtime/plans/:planId/items
+
+  {
+    "employeeId": "EMP-001",
+    "plannedDate": "2026-08-12",
+    "plannedHours": 2.5,
+    "reason": "Production support."
+  }
+
+5. Add Plan items in bulk
+  POST /api/overtime/plans/:planId/items/bulk
+
+  {
+    "items": [
+      {
+        "employeeId": "EMP-001",
+        "plannedDate": "2026-08-12",
+        "plannedHours": 2.5,
+        "reason": "Production support."
+      },
+      {
+        "employeeId": "EMP-002",
+        "plannedDate": "2026-08-13",
+        "plannedHours": 3,
+        "reason": "Urgent order completion."
+      }
+    ]
+  }
+
+6. Update one Plan item
+  PATCH /api/overtime/plans/:planId/items/:itemId
+
+  {
+    "employeeId": "EMP-001",
+    "plannedDate": "2026-08-12",
+    "plannedHours": 2,
+    "reason": "Adjusted planned overtime."
+  }
+
+7. Delete one Plan item
+  DELETE /api/overtime/plans/:planId/items/:itemId
+
+8. Delete an editable Plan
+  DELETE /api/overtime/plans/:planId
+
+  Normal deletion is limited to draft, returned, or rejected Plans.
+
+
+G. OT PLAN STATUS AND APPROVAL WORKFLOW
+=======================================
+
+1. Submit an Employee Plan or start a Department Plan approval
+  PATCH /api/overtime/plans/:planId/submit
+
+  {
+    "remarks": "Submitted for review and approval."
+  }
+
+2. Start Department approval explicitly
+  PATCH /api/overtime/plans/:planId/start-approval
+
+  {
+    "remarks": "Department Plan submitted to the assigned approval route."
+  }
+
+3. Approve assigned Department approval step
+  PATCH /api/overtime/plans/:planId/approval/approve
+
+  {
+    "remarks": "Final HR/Admin approval completed."
+  }
+
+  The caller must match the pending assigned step. Final approval creates Actual
+  OT automatically but does not generate Excel automatically.
+
+4. Return/reject assigned Department approval step
+  PATCH /api/overtime/plans/:planId/approval/reject
+
+  {
+    "remarks": "Returned for correction of planned hours."
+  }
+
+5. Legacy direct approval for a non-Department Plan
+  PATCH /api/overtime/plans/:planId/approve
+
+  {
+    "remarks": "Approved by HR."
+  }
+
+6. Legacy direct rejection for a non-Department Plan
+  PATCH /api/overtime/plans/:planId/reject
+
+  {
+    "remarks": "Rejected after review."
+  }
+
+  Department Plans must use the configured approval route, not endpoints 5-6.
+
+7. Close an approved Plan
+  PATCH /api/overtime/plans/:planId/close
+
+  {
+    "remarks": "Closed after the official Plan Excel was generated."
+  }
+
+  Generate the Department Plan Excel before closing. Current Plan Excel
+  generation requires status approved, while close changes it to closed.
+
+8. Correct/reset Plan status
+  PATCH /api/overtime/plans/:planId/reset-status
+
+  {
+    "newStatus": "draft",
+    "remarks": "Administrative status correction before Actual OT creation."
+  }
+
+  A Department Plan with linked Actual OT cannot be reset. Use Admin purge-data
+  only when permanent deletion is genuinely intended.
+
+9. Employee Plan signature endpoint is not available to Admin/HR
+  PATCH /api/overtime/plans/:planId/sign
+
+  Only the Employee or Supervisor can perform the confirmation/signing action.
+
+10. Supervisor accept/return endpoints are not available to Admin/HR
+  PATCH /api/overtime/plans/:planId/supervisor-accept
+  PATCH /api/overtime/plans/:planId/supervisor-return
+
+
+H. FINAL DEPARTMENT OT PLAN EXCEL
+=================================
+
+1. Manually generate selected approved Department Plan Excel
+  POST /api/overtime/plans/:planId/final-document/generate
+
+  First generation or retry:
+  {}
+
+  Replace an existing ready document:
+  {
+    "force": true
+  }
+
+2. Get generated Department Plan Excel signed URL
+  GET /api/overtime/plans/:planId/final-document
+
+  Important:
+    Generation is manual. The Plan must have planScope department and status
+    approved. The GET response returns a temporary signedUrl.
+
+
+I. ACTUAL OVERTIME TRACKING
+===========================
+
+1. List Actual OT periods
+  GET /api/overtime/actual-periods
+
+  Supported filters:
+    status=open or finalized, departmentId, dateFrom, dateTo
+
+  Example:
+    GET /api/overtime/actual-periods?departmentId=DEP-PRODUCTION-RTD&status=open&dateFrom=2026-08-10&dateTo=2026-08-16
+
+2. Get Actual OT period, entries, adjustments, and comments
+  GET /api/overtime/actual-periods/:actualPeriodId
+
+3. Adjust Actual OT hours
+  PATCH /api/overtime/actual-entries/:actualEntryId
+
+  {
+    "actualHours": 2.5,
+    "remarks": "Adjusted using the verified timekeeping record."
+  }
+
+  Start and end times are not stored. actualHours and audit remarks are required.
+
+4. Add Actual OT comment
+  POST /api/overtime/actual-entries/:actualEntryId/comments
+
+  {
+    "remarks": "Verified the employee's concern with the supervisor."
+  }
+
+5. Finalize and lock Actual OT period
+  PATCH /api/overtime/actual-periods/:actualPeriodId/finalize
+
+  {
+    "remarks": "Weekly timekeeping review is complete."
+  }
+
+  Only Admin/HR can finalize. The period must contain entries. Current backend
+  does not require the period end date to have passed. Finalization locks hour
+  adjustments and new comments, and does not generate Excel automatically.
+
+6. Manually generate final Actual OT Excel
+  POST /api/overtime/actual-periods/:actualPeriodId/final-document/generate
+
+  First generation or retry:
+  {}
+
+  Replace an existing ready document:
+  {
+    "force": true
+  }
+
+  Required conditions:
+    Actual OT period status is finalized.
+    Accepted Employee Plan signature exists for every Actual OT entry.
+    Approval signature snapshots and HR/Admin final approval exist.
+
+7. Get generated Actual OT Excel signed URL
+  GET /api/overtime/actual-periods/:actualPeriodId/final-document
+
+
+ADMIN/HR RECOMMENDED END-TO-END ORDER
+=====================================
+
+1. Admin creates accounts and uploads signature images.
+2. Admin/HR creates departments and employee profiles.
+3. Admin/HR configures the department approval route.
+4. Employees submit/sign Plans; Supervisors accept them.
+5. Admin/HR or Supervisor compiles the Department Plan.
+6. Assigned Supervisor and Japanese Management complete their steps.
+7. Admin/HR completes final approval.
+8. Backend creates Actual OT automatically.
+9. Admin/HR manually generates the approved Department Plan Excel.
+10. Optionally close the approved OT Plan after its Excel is generated.
+11. Admin/HR and Supervisor review Actual OT hours; users add concerns.
+12. Admin/HR finalizes Actual OT after timekeeping review.
+13. Admin/HR manually generates the final Actual OT Excel.

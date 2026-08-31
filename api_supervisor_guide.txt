@@ -1,0 +1,1276 @@
+SUPERVISOR API TESTING GUIDE
+Project: backend-code
+Workspace path: C:\Users\SCAN\system\backend
+
+Base URL
+--------
+Local default:
+  http://localhost:3000
+
+API route groups used by supervisor:
+  /api/auth
+  /api/overtime
+
+Response examples in this guide focus on the fields most useful for testing.
+Some repeated metadata fields may be omitted from later examples after they are
+shown in a full list/detail example.
+
+Authentication
+--------------
+Protected endpoints require this header:
+  Authorization: Bearer <token>
+
+Tokens are returned by:
+  POST /api/auth/login
+
+Default token expiry:
+  1 hour, unless AUTH_TOKEN_EXPIRES_IN_SECONDS is changed.
+
+
+IMPORTANT SUPERVISOR ACCOUNT RULE
+=================================
+
+The supervisor role is:
+  supervisor
+
+A supervisor account must be:
+  1. active
+  2. linked to an employee profile
+  3. linked employee profile must have a departmentId
+
+The linked employee department controls what the supervisor can see or manage.
+For most supervisor endpoints, the backend automatically scopes data to the
+supervisor's own department.
+
+If the supervisor account is not linked to an employee profile, many overtime
+endpoints return 403:
+  {
+    "message": "Your account is not linked to an employee profile."
+  }
+
+
+
+ENDPOINT SUMMARY FOR SUPERVISOR TESTING
+=======================================
+
+Public auth:
+  POST /api/auth/login
+
+Supervisor profile:
+  GET /api/auth/me
+
+Supervisor view-only master data:
+  GET /api/overtime/departments
+  GET /api/overtime/employees
+  GET /api/overtime/employees/:employeeId
+  GET /api/overtime/policies
+  GET /api/overtime/approval-routes
+  GET /api/overtime/approval-routes/:routeId
+
+Supervisor Actual OT endpoints:
+  GET   /api/overtime/actual-periods
+  GET   /api/overtime/actual-periods/:actualPeriodId
+  PATCH /api/overtime/actual-entries/:actualEntryId
+  POST  /api/overtime/actual-entries/:actualEntryId/comments
+  GET   /api/overtime/actual-periods/:actualPeriodId/final-document
+
+Supervisor planned overtime endpoints:
+  GET    /api/overtime/plans
+  POST   /api/overtime/plans
+  GET    /api/overtime/plans/items
+  GET    /api/overtime/plans/calendar
+  GET    /api/overtime/plans/supervisor-dashboard
+  GET    /api/overtime/plans/pending-approvals
+  POST   /api/overtime/plans/department/from-drafts
+  GET    /api/overtime/plans/:planId
+  PATCH  /api/overtime/plans/:planId
+  DELETE /api/overtime/plans/:planId
+  PATCH  /api/overtime/plans/:planId/submit
+  PATCH  /api/overtime/plans/:planId/close
+  PATCH  /api/overtime/plans/:planId/supervisor-accept
+  PATCH  /api/overtime/plans/:planId/supervisor-return
+  PATCH  /api/overtime/plans/:planId/start-approval
+  GET    /api/overtime/plans/:planId/approval-details
+  PATCH  /api/overtime/plans/:planId/approval/approve
+  PATCH  /api/overtime/plans/:planId/approval/reject
+  POST   /api/overtime/plans/:planId/items
+  POST   /api/overtime/plans/:planId/items/bulk
+  PATCH  /api/overtime/plans/:planId/items/:itemId
+  DELETE /api/overtime/plans/:planId/items/:itemId
+
+Not available to supervisor accounts:
+  POST   /api/overtime/departments
+  POST   /api/overtime/employees
+  PATCH  /api/overtime/employees/:employeeId
+  POST   /api/overtime/approval-routes
+  POST   /api/overtime/approval-routes/:routeId/assignments
+  DELETE /api/overtime/approval-routes/:routeId/assignments/:assignmentId
+  PATCH  /api/overtime/approval-routes/:routeId/status
+  PATCH  /api/overtime/plans/:planId/approve
+  PATCH  /api/overtime/plans/:planId/reject
+  PATCH  /api/overtime/plans/:planId/reset-status
+  GET    /api/admin/dashboard
+  GET    /api/admin/users
+  POST   /api/admin/users
+  PATCH  /api/admin/users/:userId
+  DELETE /api/admin/users/:userId
+
+
+SUPERVISOR SETUP WORKFLOW
+=========================
+
+1. Admin creates a supervisor account:
+   POST /api/admin/users
+   or
+   POST /api/auth/register
+
+Example body:
+  {
+    "firstName": "Maria",
+    "lastName": "Santos",
+    "email": "supervisor@example.com",
+    "password": "Supervisor@123",
+    "role": "supervisor",
+    "status": "active"
+  }
+
+2. Admin or HR creates a department if needed:
+   POST /api/overtime/departments
+
+Example body:
+  {
+    "departmentName": "Production"
+  }
+
+3. Admin or HR links the supervisor account to an employee profile:
+   POST /api/overtime/employees
+
+Example body:
+  {
+    "userId": "user-...",
+    "departmentId": "DEP-...",
+    "position": "Supervisor",
+    "shift": "day",
+    "employmentType": "regular"
+  }
+
+4. Admin or HR links employees in the same department to this supervisor:
+   POST /api/overtime/employees
+   or
+   PATCH /api/overtime/employees/:employeeId
+
+Example employee body:
+  {
+    "userId": "user-...",
+    "departmentId": "DEP-...",
+    "position": "Operator",
+    "shift": "day",
+    "employmentType": "regular",
+    "supervisorUserId": "supervisor-user-id"
+  }
+
+5. Log in as supervisor:
+   POST /api/auth/login
+
+
+1. LOGIN
+========
+
+Endpoint:
+  POST /api/auth/login
+
+Auth:
+  None
+
+Request body:
+  {
+    "email": "supervisor@example.com",
+    "password": "Supervisor@123"
+  }
+
+Success response:
+  Status: 200
+  {
+    "token": "<jwt-token>",
+    "user": {
+      "id": "user-...",
+      "firstName": "Maria",
+      "lastName": "Santos",
+      "name": "Maria Santos",
+      "email": "supervisor@example.com",
+      "role": "supervisor",
+      "status": "active",
+      "hasEmployeeProfile": true,
+      "employeeId": null
+    }
+  }
+
+Note:
+  The current login response only adds employeeId for role "user".
+  Supervisors still need a linked employee profile for department-scoped
+  supervisor endpoints, even if login shows employeeId as null.
+
+Error responses:
+  400 - Email and password are required.
+  401 - Invalid email or password.
+  403 - Your account is not active. Please contact the administrator.
+
+
+2. GET CURRENT SUPERVISOR PROFILE
+=================================
+
+Endpoint:
+  GET /api/auth/me
+
+Auth:
+  Required supervisor token
+
+Headers:
+  Authorization: Bearer <supervisor-token>
+
+Success response:
+  Status: 200
+  {
+    "user": {
+      "id": "user-...",
+      "firstName": "Maria",
+      "lastName": "Santos",
+      "email": "supervisor@example.com",
+      "role": "supervisor",
+      "status": "active",
+      "hasEmployeeProfile": true,
+      "employeeId": null
+    }
+  }
+
+
+3. LIST DEPARTMENTS
+===================
+
+Endpoint:
+  GET /api/overtime/departments
+
+Auth:
+  Required supervisor token
+
+Purpose:
+  View department master data. Supervisor can view departments but cannot create
+  departments.
+
+Success response:
+  Status: 200
+  {
+    "departments": [
+      {
+        "departmentId": "DEP-...",
+        "departmentName": "Production",
+        "parentDepartmentId": "",
+        "headEmployeeId": "",
+        "status": "active"
+      }
+    ]
+  }
+
+
+4. LIST EMPLOYEES
+=================
+
+Endpoint:
+  GET /api/overtime/employees
+
+Auth:
+  Required supervisor token
+
+Purpose:
+  View employee master data.
+
+Important:
+  For supervisor tokens, this endpoint returns only employees that match both:
+    1. the supervisor's linked employee departmentId
+    2. supervisorUserId equal to the logged-in supervisor user id
+
+  Admin, HR, and Japanese Management can view broader employee lists.
+
+Optional query filters:
+  employeeId
+  userId
+  employeeNo
+  departmentId
+  supervisorUserId
+  shift
+  employmentType
+  status
+
+Supervisor note:
+  For supervisor tokens, departmentId and supervisorUserId are forced by the
+  backend. Passing different values in the query will not widen the results.
+
+Success response:
+  Status: 200
+  {
+    "employees": [
+      {
+        "employeeId": "EMP-...",
+        "userId": "user-...",
+        "employeeNo": "EMP-001",
+        "fullName": "Juan D Cruz",
+        "departmentId": "DEP-...",
+        "departmentName": "Production",
+        "position": "Operator",
+        "supervisorUserId": "user-...",
+        "shift": "day",
+        "employmentType": "regular",
+        "status": "active",
+        "userStatus": "active"
+      }
+    ]
+  }
+
+
+4A. GET EMPLOYEE BY ID
+======================
+
+Endpoint:
+  GET /api/overtime/employees/:employeeId
+
+Auth:
+  Required supervisor token
+
+Purpose:
+  View one employee profile by employeeId.
+
+Important:
+  For supervisor tokens, the employee must be in the supervisor's linked
+  department and must be assigned to the logged-in supervisorUserId. The
+  supervisor can also view their own linked employee profile.
+
+Success response:
+  Status: 200
+  {
+    "employee": {
+      "employeeId": "EMP-...",
+      "userId": "user-...",
+      "employeeNo": "EMP-001",
+      "fullName": "Juan D Cruz",
+      "departmentId": "DEP-...",
+      "departmentName": "Production",
+      "position": "Operator",
+      "supervisorUserId": "user-...",
+      "shift": "day",
+      "employmentType": "regular",
+      "status": "active",
+      "userStatus": "active"
+    }
+  }
+
+Error responses:
+  403 - You do not have permission to view this employee profile.
+  404 - Employee profile not found.
+
+
+5. LIST POLICIES
+================
+
+Endpoint:
+  GET /api/overtime/policies
+
+Auth:
+  Required supervisor token
+
+Success response:
+  Status: 200
+  {
+    "policies": [
+      {
+        "policyId": "POL-...",
+        "name": "Regular Overtime",
+        "minimumHours": 1,
+        "maximumHoursPerDay": 4,
+        "requiresSupervisorApproval": "yes",
+        "requiresHrApproval": "yes",
+        "rateMultiplier": 1.25,
+        "status": "active"
+      }
+    ]
+  }
+
+
+6. LIST APPROVAL ROUTES
+=======================
+
+Endpoint:
+  GET /api/overtime/approval-routes
+
+Auth:
+  Required supervisor token
+
+Supported query filters:
+  departmentId=DEP-...
+  status=active or inactive
+
+Success response:
+  Status: 200
+  {
+    "approvalRoutes": [
+      {
+        "routeId": "ROUTE-...",
+        "departmentId": "DEP-...",
+        "departmentName": "Production",
+        "routeName": "Production OT Approval",
+        "status": "active"
+      }
+    ]
+  }
+
+
+7. GET APPROVAL ROUTE DETAIL
+============================
+
+Endpoint:
+  GET /api/overtime/approval-routes/:routeId
+
+Auth:
+  Required supervisor token
+
+Success response:
+  Status: 200
+  {
+    "approvalRoute": {
+      "routeId": "ROUTE-...",
+      "departmentId": "DEP-...",
+      "routeName": "Production OT Approval",
+      "status": "active",
+      "assignedApprovers": [
+        {
+          "assignmentId": "STEP-...",
+          "stepOrder": 1,
+          "stepName": "Supervisor Approval",
+          "approverRole": "supervisor",
+          "approverUserId": "user-...",
+          "approverName": "Maria Santos"
+        }
+      ]
+    }
+  }
+
+
+
+8. LIST DEPARTMENT OVERTIME PLANS
+==================================
+
+Endpoint:
+  GET /api/overtime/plans
+
+Auth:
+  Required supervisor token
+
+Purpose:
+  Return overtime plans in the supervisor's linked employee department.
+
+Supported query filters:
+  status
+  periodType=weekly or monthly
+  planScope=employee or department
+  dateFrom
+  dateTo
+  year
+  month
+  limit
+  offset
+
+Success response:
+  Status: 200
+  {
+    "overtimePlans": [
+      {
+        "planId": "PLAN-...",
+        "departmentId": "DEP-...",
+        "periodType": "weekly",
+        "periodStartDate": "2026-07-27",
+        "periodEndDate": "2026-08-02",
+        "status": "submitted_to_supervisor",
+        "planScope": "employee",
+        "itemCount": 1,
+        "plannedHours": 3
+      }
+    ]
+  }
+
+
+9. GET SUPERVISOR PLAN DASHBOARD
+=================================
+
+Endpoint:
+  GET /api/overtime/plans/supervisor-dashboard
+
+Auth:
+  Required supervisor token
+
+Purpose:
+  Show which employees in the supervisor's department have submitted planned
+  overtime for a specific period.
+
+Required query fields:
+  periodType=weekly or monthly
+  periodStartDate=YYYY-MM-DD
+  periodEndDate=YYYY-MM-DD
+
+Optional query fields:
+  includeUnassigned=true or false
+
+For supervisor role:
+  departmentId is optional. If omitted, backend uses the supervisor's linked
+  employee department.
+  supervisorUserId is automatically set to the authenticated supervisor.
+
+Example:
+  GET /api/overtime/plans/supervisor-dashboard?periodType=weekly&periodStartDate=2026-07-27&periodEndDate=2026-08-02
+
+Success response:
+  Status: 200
+  {
+    "supervisorDashboard": {
+      "departmentId": "DEP-...",
+      "supervisorUserId": "supervisor-user-id",
+      "includeUnassigned": true,
+      "periodType": "weekly",
+      "periodStartDate": "2026-07-27",
+      "periodEndDate": "2026-08-02",
+      "totalEmployees": 5,
+      "submittedCount": 3,
+      "acceptedCount": 2,
+      "returnedCount": 1,
+      "missingCount": 2,
+      "employees": [
+        {
+          "employeeId": "EMP-...",
+          "employeeName": "Juan D Cruz",
+          "hasPlan": true,
+          "plan": {
+            "planId": "PLAN-...",
+            "status": "submitted_to_supervisor",
+            "itemCount": 1,
+            "plannedHours": 3
+          }
+        }
+      ]
+    }
+  }
+
+Error responses:
+  400 - Period type must be weekly or monthly.
+  400 - Weekly overtime plans must start on Monday and end on Sunday.
+  400 - Monthly overtime plans must cover the full calendar month.
+  403 - Your account is not linked to an employee profile.
+
+
+10. ACCEPT EMPLOYEE OVERTIME PLAN
+=================================
+
+Endpoint:
+  PATCH /api/overtime/plans/:planId/supervisor-accept
+
+Auth:
+  Required supervisor token
+
+Purpose:
+  Accept an employee-scope plan submitted to supervisor.
+
+Request body:
+  {
+    "remarks": "Accepted for department planning"
+  }
+
+Rules:
+  Plan must be employee scope.
+  Plan must be in status submitted_to_supervisor.
+  Plan department must match supervisor's department.
+
+Success response:
+  Status: 200
+  {
+    "overtimePlan": {
+      "planId": "PLAN-...",
+      "status": "supervisor_accepted",
+      "supervisorReviewedBy": "supervisor-user-id",
+      "supervisorReviewedAt": "2026-07-27T10:00:00.000Z"
+    }
+  }
+
+Error responses:
+  400 - Supervisor can only review employee OT plans.
+  400 - Only plans submitted to supervisor can be reviewed.
+  403 - Only the department supervisor can accept employee OT plans.
+
+
+11. RETURN EMPLOYEE OVERTIME PLAN
+=================================
+
+Endpoint:
+  PATCH /api/overtime/plans/:planId/supervisor-return
+
+Auth:
+  Required supervisor token
+
+Purpose:
+  Return an employee-scope plan to the employee for revision.
+
+Request body:
+  {
+    "remarks": "Please reduce planned hours on Tuesday."
+  }
+
+Success response:
+  Status: 200
+  {
+    "overtimePlan": {
+      "planId": "PLAN-...",
+      "status": "supervisor_returned",
+      "rejectionReason": "Please reduce planned hours on Tuesday.",
+      "supervisorReviewedBy": "supervisor-user-id"
+    }
+  }
+
+
+12. CREATE DEPARTMENT PLAN FROM ACCEPTED EMPLOYEE PLANS
+=======================================================
+
+Endpoint:
+  POST /api/overtime/plans/department/from-drafts
+
+Auth:
+  Required supervisor token
+
+Purpose:
+  Build a department-scope overtime plan from accepted employee plans for the
+  same department and period.
+
+Request body:
+  {
+    "periodType": "weekly",
+    "periodStartDate": "2026-07-27",
+    "periodEndDate": "2026-08-02",
+    "remarks": "Department weekly OT plan"
+  }
+
+For supervisor role:
+  departmentId is optional. If omitted, backend uses the supervisor's linked
+  employee department.
+
+Rules:
+  There must be at least one employee plan with status supervisor_accepted for
+  the department and period.
+
+Success response:
+  Status: 201
+  {
+    "overtimePlan": {
+      "planId": "DEPTPLAN-...",
+      "departmentId": "DEP-...",
+      "periodType": "weekly",
+      "periodStartDate": "2026-07-27",
+      "periodEndDate": "2026-08-02",
+      "status": "draft",
+      "planScope": "department",
+      "items": []
+    }
+  }
+
+Error responses:
+  400 - No supervisor-accepted employee OT plans found for this period.
+  400 - Accepted employee plans do not contain plan items.
+  403 - Only supervisor, admin, or HR can create department OT plans from employee drafts.
+
+
+13. CREATE OVERTIME PLAN
+========================
+
+Endpoint:
+  POST /api/overtime/plans
+
+Auth:
+  Required supervisor token
+
+Purpose:
+  Create a new overtime plan in the supervisor's department.
+
+Important behavior:
+  For supervisor role, departmentId is optional. If omitted, backend uses the
+  supervisor's linked employee department.
+  planScope defaults to department for supervisor role.
+
+Request body:
+  {
+    "periodType": "weekly",
+    "periodStartDate": "2026-07-27",
+    "periodEndDate": "2026-08-02",
+    "planScope": "department",
+    "remarks": "Department planned overtime"
+  }
+
+Success response:
+  Status: 201
+  {
+    "overtimePlan": {
+      "planId": "PLAN-...",
+      "departmentId": "DEP-...",
+      "periodType": "weekly",
+      "periodStartDate": "2026-07-27",
+      "periodEndDate": "2026-08-02",
+      "status": "draft",
+      "planScope": "department"
+    }
+  }
+
+
+14. ADD ITEM TO PLAN
+====================
+
+Endpoint:
+  POST /api/overtime/plans/:planId/items
+
+Auth:
+  Required supervisor token
+
+Purpose:
+  Add a plan item to a plan in the supervisor's department.
+
+Request body:
+  {
+    "employeeId": "EMP-...",
+    "plannedDate": "2026-07-27",
+    "plannedHours": 3,
+    "reason": "Planned production support"
+  }
+
+Alternative field names:
+  date can be used instead of plannedDate.
+  totalHours can be used instead of plannedHours.
+
+Required fields:
+  employeeId
+  plannedDate or date
+  plannedHours or totalHours
+  reason
+
+Success response:
+  Status: 201
+  {
+    "plan": {
+      "planId": "PLAN-...",
+      "itemCount": 1,
+      "plannedHours": 3
+    },
+    "item": {
+      "planItemId": "PLANITEM-...",
+      "employeeId": "EMP-...",
+      "plannedDate": "2026-07-27",
+      "plannedHours": 3,
+      "reason": "Planned production support"
+    }
+  }
+
+
+15. BULK ADD PLAN ITEMS
+=======================
+
+Endpoint:
+  POST /api/overtime/plans/:planId/items/bulk
+
+Auth:
+  Required supervisor token
+
+Request body:
+  {
+    "items": [
+      {
+        "employeeId": "EMP-...",
+        "plannedDate": "2026-07-27",
+        "plannedHours": 3,
+        "reason": "Planned production support"
+      }
+    ]
+  }
+
+Rules:
+  items must be a non-empty array.
+  Maximum 100 items per request.
+  Every item must include employeeId for supervisor role.
+
+Success response:
+  Status: 201
+  {
+    "plan": {
+      "planId": "PLAN-..."
+    },
+    "items": [
+      {
+        "planItemId": "PLANITEM-...",
+        "employeeId": "EMP-...",
+        "plannedDate": "2026-07-27",
+        "plannedHours": 3
+      }
+    ]
+  }
+
+
+16. UPDATE PLAN ITEM
+====================
+
+Endpoint:
+  PATCH /api/overtime/plans/:planId/items/:itemId
+
+Auth:
+  Required supervisor token
+
+Allowed fields:
+  employeeId
+  plannedDate or date
+  plannedHours or totalHours
+  reason
+
+Request body:
+  {
+    "plannedDate": "2026-07-28",
+    "plannedHours": 2.5,
+    "reason": "Updated planned overtime"
+  }
+
+Success response:
+  Status: 200
+  {
+    "plan": {
+      "planId": "PLAN-..."
+    },
+    "item": {
+      "planItemId": "PLANITEM-...",
+      "plannedDate": "2026-07-28",
+      "plannedHours": 2.5,
+      "reason": "Updated planned overtime"
+    }
+  }
+
+
+17. DELETE PLAN ITEM
+====================
+
+Endpoint:
+  DELETE /api/overtime/plans/:planId/items/:itemId
+
+Auth:
+  Required supervisor token
+
+Success response:
+  Status: 200
+  {
+    "message": "Overtime plan item deleted successfully.",
+    "plan": {
+      "planId": "PLAN-..."
+    },
+    "item": {
+      "planItemId": "PLANITEM-..."
+    }
+  }
+
+
+18. GET PLAN DETAIL
+===================
+
+Endpoint:
+  GET /api/overtime/plans/:planId
+
+Auth:
+  Required supervisor token
+
+Purpose:
+  Return plan detail, items, and logs for a plan in the supervisor's department.
+
+Success response:
+  Status: 200
+  {
+    "overtimePlan": {
+      "planId": "PLAN-...",
+      "departmentId": "DEP-...",
+      "status": "draft",
+      "planScope": "department",
+      "items": [],
+      "logs": []
+    }
+  }
+
+
+19. UPDATE PLAN
+===============
+
+Endpoint:
+  PATCH /api/overtime/plans/:planId
+
+Auth:
+  Required supervisor token
+
+Allowed fields:
+  periodType
+  periodStartDate
+  periodEndDate
+  remarks
+
+Important:
+  Supervisor cannot move a plan to another department.
+
+Request body:
+  {
+    "remarks": "Updated department plan remarks"
+  }
+
+Success response:
+  Status: 200
+  {
+    "overtimePlan": {
+      "planId": "PLAN-...",
+      "remarks": "Updated department plan remarks"
+    }
+  }
+
+Error responses:
+  400 - Only draft or returned overtime plans can be modified.
+  403 - You cannot move an overtime plan to another department.
+
+
+20. DELETE PLAN
+===============
+
+Endpoint:
+  DELETE /api/overtime/plans/:planId
+
+Auth:
+  Required supervisor token
+
+Rules:
+  Plan must be in supervisor's department.
+  Plan status must be one of:
+    draft
+    rejected
+    supervisor_returned
+    returned_for_revision
+
+Success response:
+  Status: 200
+  {
+    "message": "Overtime plan deleted successfully.",
+    "overtimePlan": {
+      "planId": "PLAN-...",
+      "status": "draft"
+    }
+  }
+
+
+21. SUBMIT DEPARTMENT PLAN TO APPROVAL ROUTE
+============================================
+
+Endpoint:
+  PATCH /api/overtime/plans/:planId/submit
+
+Alternative endpoint:
+  PATCH /api/overtime/plans/:planId/start-approval
+
+Auth:
+  Required supervisor token
+
+Purpose:
+  Submit a department-scope plan into the assigned approval route.
+
+Request body:
+  {
+    "remarks": "Submitted for assigned approval"
+  }
+
+Rules:
+  Plan must be department scope.
+  Plan status must be draft or returned_for_revision.
+  Plan must contain at least one item.
+  The department must have an active approval route.
+
+Success response:
+  Status: 200
+  {
+    "overtimePlan": {
+      "planId": "DEPTPLAN-...",
+      "status": "pending_approval",
+      "departmentSubmittedBy": "supervisor-user-id",
+      "currentApproverRole": "supervisor",
+      "approvals": []
+    }
+  }
+
+Error responses:
+  400 - Only department OT plans can be submitted to the approval route.
+  400 - Only draft or returned department OT plans can be submitted for approval.
+  400 - Add at least one plan item before submitting the department OT plan.
+
+
+22. LIST MY PENDING DEPARTMENT PLAN APPROVALS
+=============================================
+
+Endpoint:
+  GET /api/overtime/plans/pending-approvals
+
+Auth:
+  Required supervisor token
+
+Purpose:
+  Return pending department-plan approval steps assigned to the supervisor.
+
+Supported query filters:
+  departmentId
+  periodType
+
+Success response:
+  Status: 200
+  {
+    "pendingApprovals": [
+      {
+        "approvalId": "OTAPPROVAL-...",
+        "planId": "DEPTPLAN-...",
+        "stepOrder": 1,
+        "stepName": "Supervisor Approval",
+        "approverRole": "supervisor",
+        "approverUserId": "supervisor-user-id",
+        "status": "pending",
+        "departmentId": "DEP-...",
+        "periodType": "weekly",
+        "periodStartDate": "2026-07-27",
+        "periodEndDate": "2026-08-02"
+      }
+    ]
+  }
+
+
+23. GET DEPARTMENT PLAN APPROVAL DETAILS
+========================================
+
+Endpoint:
+  GET /api/overtime/plans/:planId/approval-details
+
+Auth:
+  Required supervisor token
+
+Purpose:
+  Return department plan detail plus approval steps.
+
+Success response:
+  Status: 200
+  {
+    "overtimePlan": {
+      "planId": "DEPTPLAN-...",
+      "status": "pending_approval",
+      "approvals": [
+        {
+          "approvalId": "OTAPPROVAL-...",
+          "stepOrder": 1,
+          "approverRole": "supervisor",
+          "status": "pending"
+        }
+      ]
+    }
+  }
+
+Error responses:
+  403 - You do not have permission to access this approval workflow.
+  404 - Overtime plan not found.
+
+
+24. APPROVE ASSIGNED DEPARTMENT PLAN STEP
+=========================================
+
+Endpoint:
+  PATCH /api/overtime/plans/:planId/approval/approve
+
+Auth:
+  Required supervisor token
+
+Purpose:
+  Approve the pending approval step assigned to the supervisor.
+
+Request body:
+  {
+    "remarks": "Supervisor approval completed"
+  }
+
+Success response:
+  Status: 200
+  {
+    "overtimePlan": {
+      "planId": "DEPTPLAN-...",
+      "status": "pending_approval",
+      "approvals": [
+        {
+          "approvalId": "OTAPPROVAL-...",
+          "approverRole": "supervisor",
+          "status": "approved",
+          "actedBy": "supervisor-user-id"
+        }
+      ]
+    }
+  }
+
+Error responses:
+  400 - Only department plans pending approval can be approved.
+  403 - You are not assigned as a pending approver for this department OT plan.
+
+
+25. RETURN ASSIGNED DEPARTMENT PLAN STEP
+========================================
+
+Endpoint:
+  PATCH /api/overtime/plans/:planId/approval/reject
+
+Auth:
+  Required supervisor token
+
+Purpose:
+  Return the department plan for revision from the supervisor's assigned approval
+  step.
+
+Request body:
+  {
+    "remarks": "Please revise employee coverage."
+  }
+
+Required fields:
+  remarks
+
+Success response:
+  Status: 200
+  {
+    "overtimePlan": {
+      "planId": "DEPTPLAN-...",
+      "status": "returned_for_revision",
+      "rejectionReason": "Please revise employee coverage."
+    }
+  }
+
+Error responses:
+  400 - Remarks are required when returning a department OT plan for revision.
+  400 - Only department plans pending approval can be returned.
+  403 - You are not assigned as a pending approver for this department OT plan.
+
+
+26. CLOSE APPROVED PLAN
+=======================
+
+Endpoint:
+  PATCH /api/overtime/plans/:planId/close
+
+Auth:
+  Required supervisor token
+
+Purpose:
+  Close an approved plan in the supervisor's department.
+
+Request body:
+  {
+    "remarks": "Closed after completion"
+  }
+
+Success response:
+  Status: 200
+  {
+    "overtimePlan": {
+      "planId": "PLAN-...",
+      "status": "closed",
+      "closedBy": "supervisor-user-id",
+      "closedAt": "2026-07-27T10:00:00.000Z"
+    }
+  }
+
+Error responses:
+  400 - Cannot change overtime plan status from draft to closed.
+  403 - You do not have permission to update this overtime plan status.
+
+
+SUPERVISOR TESTING WORKFLOW
+===========================
+
+1. Admin creates supervisor account:
+   POST /api/admin/users
+
+2. Admin or HR links supervisor to an employee profile:
+   POST /api/overtime/employees
+
+3. Admin or HR assigns department employees to that supervisor:
+   PATCH /api/overtime/employees/:employeeId
+
+4. Supervisor logs in:
+   POST /api/auth/login
+
+5. Supervisor checks profile:
+   GET /api/auth/me
+
+6. Supervisor reviews and adjusts Actual OT:
+   GET   /api/overtime/actual-periods
+   GET   /api/overtime/actual-periods/:actualPeriodId
+   PATCH /api/overtime/actual-entries/:actualEntryId
+
+7. Supervisor reviews employee OT plans:
+   GET   /api/overtime/plans/supervisor-dashboard
+   GET   /api/overtime/plans/:planId
+   PATCH /api/overtime/plans/:planId/supervisor-accept
+   PATCH /api/overtime/plans/:planId/supervisor-return
+
+8. Supervisor creates department plan:
+   POST  /api/overtime/plans/department/from-drafts
+
+9. Supervisor submits department plan for assigned approval:
+   PATCH /api/overtime/plans/:planId/submit
+
+10. Supervisor handles assigned department approval steps:
+   GET   /api/overtime/plans/pending-approvals
+   PATCH /api/overtime/plans/:planId/approval/approve
+   PATCH /api/overtime/plans/:planId/approval/reject
+
+For complete Actual OT request and response examples, see:
+  api_actual_overtime_guide.txt
+
+
+NOTES FOR FRONTEND / CLIENT IMPLEMENTATION
+==========================================
+
+Use "role": "supervisor" to identify supervisor-level accounts.
+
+Supervisor screens should be department-focused:
+  assigned employee Actual OT
+  pending overtime approvals
+  employee plan submissions
+  supervisor plan dashboard
+  department plan creation
+  assigned approval steps
+
+Do not show these actions to supervisors:
+  create department
+  create employee
+  edit employee
+  create approval route
+  edit approval route assignments
+  mark actual overtime as paid
+  direct approve/reject plan endpoints
+  reset plan status
+  admin account management
+
+
+Overtime plan statuses:
+  draft
+  submitted
+  submitted_to_supervisor
+  supervisor_returned
+  supervisor_accepted
+  pending_approval
+  returned_for_revision
+  approved
+  rejected
+  closed
+
+Approval step statuses:
+  pending
+  approved
+  rejected
+  skipped
