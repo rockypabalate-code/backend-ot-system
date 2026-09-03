@@ -107,7 +107,7 @@ async function getSupervisorPlanDashboard(req, res, next) {
   try {
     let departmentId = req.query.departmentId;
 
-    if (!departmentId && isSupervisorRole(req.user)) {
+    if (isSupervisorRole(req.user)) {
       const employee = await getLinkedEmployee(req.user);
       departmentId = employee ? employee.departmentId : '';
     }
@@ -122,6 +122,9 @@ async function getSupervisorPlanDashboard(req, res, next) {
       ...req.query,
       departmentId,
       supervisorUserId: isSupervisorRole(req.user) && !isAdminOrHr(req.user) ? req.user.id : req.query.supervisorUserId,
+      includeUnassigned: isSupervisorRole(req.user) && !isAdminOrHr(req.user)
+        ? false
+        : req.query.includeUnassigned,
     });
 
     return res.json({ supervisorDashboard: dashboard });
@@ -134,7 +137,7 @@ async function createDepartmentPlanFromEmployeeDrafts(req, res, next) {
   try {
     let departmentId = req.body.departmentId;
 
-    if (!departmentId && isSupervisorRole(req.user)) {
+    if (isSupervisorRole(req.user)) {
       const employee = await getLinkedEmployee(req.user);
       departmentId = employee ? employee.departmentId : '';
     }
@@ -149,6 +152,9 @@ async function createDepartmentPlanFromEmployeeDrafts(req, res, next) {
       {
         ...req.body,
         departmentId,
+        supervisorUserId: isSupervisorRole(req.user) && !isAdminOrHr(req.user)
+          ? req.user.id
+          : req.body.supervisorUserId,
       },
       req.user.id
     );

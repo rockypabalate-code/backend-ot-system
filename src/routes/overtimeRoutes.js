@@ -13,7 +13,7 @@ router.patch('/departments/:departmentId', authorize('admin', 'hr'), overtimeCon
 router.delete('/departments/:departmentId', authorize('admin'), overtimeController.deleteDepartment);
 
 router.get('/employees', authorize('admin', 'hr', 'supervisor', 'japanese_management'), overtimeController.listEmployees);
-router.get('/employees/me', authorize('user'), overtimeController.getMyEmployee);
+router.get('/employees/me', authorize('user', 'supervisor'), overtimeController.getMyEmployee);
 router.get('/employees/:employeeId', authorize('admin', 'hr', 'supervisor', 'japanese_management'), overtimeController.getEmployee);
 router.post('/employees', authorize('admin', 'hr'), overtimeController.createEmployee);
 router.patch('/employees/:employeeId', authorize('admin', 'hr'), overtimeController.updateEmployee);
@@ -53,6 +53,7 @@ router.patch('/plans/:planId/reject', authorize('admin', 'hr'), overtimeControll
 router.patch('/plans/:planId/close', authorize('admin', 'hr', 'supervisor'), overtimeController.closeOvertimePlan);
 router.patch('/plans/:planId/supervisor-accept', authorize('supervisor'), overtimeController.supervisorAcceptEmployeePlan);
 router.patch('/plans/:planId/supervisor-return', authorize('supervisor'), overtimeController.supervisorReturnEmployeePlan);
+router.patch('/plans/:planId/department-submit-and-sign', authorize('supervisor'), overtimeController.startDepartmentPlanApproval);
 router.patch('/plans/:planId/start-approval', authorize('admin', 'hr', 'supervisor'), overtimeController.startDepartmentPlanApproval);
 router.patch('/plans/:planId/reset-status', authorize('admin', 'hr', 'supervisor'), overtimeController.resetOvertimePlanStatus);
 router.get('/plans/:planId/approval-details', authorize('admin', 'hr', 'supervisor', 'japanese_management'), overtimeController.getDepartmentPlanApprovalDetails);

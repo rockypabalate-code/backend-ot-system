@@ -9,7 +9,7 @@ const {
 } = require('./overtimePlanService');
 const { getEmployeeByUserId } = require('./employeeService');
 const { createActualPeriodFromApprovedPlan } = require('./actualOvertimeService');
-const { getUserSignature } = require('../signatureService');
+const { createSignatureSignedUrl, getUserSignature } = require('../signatureService');
 const {
   buildFullName,
   dateOnly,
@@ -739,6 +739,8 @@ async function getUnsignedEmployeeIdsForPlan(planId, executor = { query }) {
         ON signature_record.plan_id = opi.plan_id
        AND signature_record.employee_id = opi.employee_id
        AND signature_record.status = 'active'
+       AND signature_record.signer_role = 'employee'
+       AND signature_record.confirmation_method = 'self'
       WHERE opi.plan_id = $1
         AND signature_record.signature_record_id IS NULL
       ORDER BY opi.employee_id ASC;
@@ -814,7 +816,7 @@ async function supervisorReviewEmployeePlan(planId, action, actionBy, remarks) {
 
       if (unsignedEmployeeIds.length > 0) {
         throw new AppError(
-          'Every employee in the overtime plan must confirm or be confirmed by the assigned supervisor before acceptance.',
+          'Every employee in the overtime plan must submit their own active signature before acceptance.',
           400,
           'EMPLOYEE_SIGNATURE_REQUIRED'
         );
@@ -902,26 +904,92 @@ async function getSupervisorPlanDashboard(filters = {}) {
         op.status,
         op.remarks,
         op.rejection_reason,
+        op.created_at,
+        op.updated_at,
         opi.employee_id,
         COUNT(opi.plan_item_id)::INTEGER AS item_count,
-        COALESCE(SUM(opi.planned_hours), 0)::NUMERIC AS planned_hours
+        COALESCE(SUM(opi.planned_hours), 0)::NUMERIC AS planned_hours,
+        JSON_AGG(
+          JSON_BUILD_OBJECT(
+            'planItemId', opi.plan_item_id,
+            'plannedDate', opi.planned_date,
+            'plannedHours', opi.planned_hours,
+            'reason', opi.reason
+          )
+          ORDER BY opi.planned_date ASC, opi.plan_item_id ASC
+        ) AS items,
+        signature_record.signature_record_id,
+        signature_record.signer_role,
+        signature_record.confirmation_method,
+        signature_record.signature_file_path,
+        signature_record.signature_mime_type,
+        signature_record.signed_at
       FROM overtime_plans op
       INNER JOIN overtime_plan_items opi ON opi.plan_id = op.plan_id
+      LEFT JOIN overtime_plan_signature_records signature_record
+        ON signature_record.plan_id = op.plan_id
+       AND signature_record.employee_id = opi.employee_id
+       AND signature_record.status = 'active'
+       AND signature_record.signer_role = 'employee'
+       AND signature_record.confirmation_method = 'self'
       WHERE op.department_id = $1
         AND COALESCE(op.plan_scope, 'employee') = 'employee'
         AND op.period_type = $2
         AND op.period_start_date = $3
         AND op.period_end_date = $4
-      GROUP BY op.plan_id, op.created_by, op.status, op.remarks, op.rejection_reason, opi.employee_id;
+      GROUP BY
+        op.plan_id,
+        op.created_by,
+        op.status,
+        op.remarks,
+        op.rejection_reason,
+        op.created_at,
+        op.updated_at,
+        opi.employee_id,
+        signature_record.signature_record_id,
+        signature_record.signer_role,
+        signature_record.confirmation_method,
+        signature_record.signature_file_path,
+        signature_record.signature_mime_type,
+        signature_record.signed_at;
+    `,
+    [departmentId, periodType, periodStartDate, periodEndDate]
+  );
+
+  const departmentPlanResult = await query(
+    `
+      SELECT plan_id, status, remarks, created_at, updated_at
+      FROM overtime_plans
+      WHERE department_id = $1
+        AND COALESCE(plan_scope, 'employee') = 'department'
+        AND period_type = $2
+        AND period_start_date = $3
+        AND period_end_date = $4
+      ORDER BY updated_at DESC, created_at DESC
+      LIMIT 1;
     `,
     [departmentId, periodType, periodStartDate, periodEndDate]
   );
 
   const latestPlanByEmployee = new Map();
+  const dashboardStatusPriority = {
+    supervisor_accepted: 4,
+    submitted_to_supervisor: 3,
+    supervisor_returned: 2,
+    returned_for_revision: 2,
+    draft: 1,
+  };
 
   for (const row of planResult.rows) {
     const current = latestPlanByEmployee.get(row.employee_id);
-    if (!current || row.plan_id > current.planId) {
+    const updatedAt = iso(row.updated_at || row.created_at);
+    const nextPriority = dashboardStatusPriority[row.status] || 0;
+    const currentPriority = dashboardStatusPriority[current?.status] || 0;
+    if (
+      !current
+      || nextPriority > currentPriority
+      || (nextPriority === currentPriority && updatedAt > current.updatedAt)
+    ) {
       latestPlanByEmployee.set(row.employee_id, {
         planId: row.plan_id,
         employeeId: row.employee_id,
@@ -930,12 +998,76 @@ async function getSupervisorPlanDashboard(filters = {}) {
         plannedHours: toNumber(row.planned_hours),
         remarks: row.remarks || '',
         rejectionReason: row.rejection_reason || '',
+        createdAt: iso(row.created_at),
+        updatedAt,
+        items: Array.isArray(row.items)
+          ? row.items.map((item) => ({
+              planItemId: item.planItemId,
+              plannedDate: dateOnly(item.plannedDate),
+              plannedHours: toNumber(item.plannedHours),
+              reason: item.reason || '',
+            }))
+          : [],
+        signature: row.signature_record_id
+          ? {
+              signatureRecordId: row.signature_record_id,
+              signerRole: row.signer_role,
+              confirmationMethod: row.confirmation_method,
+              mimeType: row.signature_mime_type || '',
+              signedAt: iso(row.signed_at),
+              signedUrl: '',
+              previewAvailable: false,
+              _filePath: row.signature_file_path,
+            }
+          : null,
       });
     }
   }
 
-  const employees = employeeResult.rows.map((row) => {
+  const submittedStatuses = new Set(['submitted_to_supervisor', 'supervisor_accepted']);
+  const employees = await Promise.all(employeeResult.rows.map(async (row) => {
     const plan = latestPlanByEmployee.get(row.employee_id) || null;
+    let publicPlan = plan;
+
+    if (plan && plan.signature) {
+      const { _filePath, ...signature } = plan.signature;
+      let preview = {};
+
+      try {
+        preview = await createSignatureSignedUrl(_filePath);
+      } catch (error) {
+        preview = {};
+      }
+
+      publicPlan = {
+        ...plan,
+        signature: {
+          ...signature,
+          ...preview,
+          previewAvailable: Boolean(preview.signedUrl),
+        },
+      };
+    }
+
+    const hasSignedSubmission = Boolean(
+      publicPlan
+      && submittedStatuses.has(publicPlan.status)
+      && publicPlan.signature
+    );
+    const submissionState = !publicPlan
+      ? 'not_submitted'
+      : publicPlan.status === 'supervisor_accepted' && publicPlan.signature
+        ? 'accepted_signed'
+        : publicPlan.status === 'submitted_to_supervisor' && publicPlan.signature
+          ? 'submitted_signed'
+          : submittedStatuses.has(publicPlan.status)
+            ? 'submitted_unsigned'
+            : publicPlan.status === 'supervisor_returned'
+              ? 'returned'
+              : publicPlan.status === 'draft'
+                ? 'draft'
+                : 'not_submitted';
+
     return {
       employeeId: row.employee_id,
       employeeNo: row.employee_no || '',
@@ -945,12 +1077,18 @@ async function getSupervisorPlanDashboard(filters = {}) {
       role: row.role || '',
       position: row.position || '',
       supervisorUserId: row.supervisor_user_id || '',
-      hasPlan: Boolean(plan),
-      plan,
+      hasPlan: Boolean(publicPlan),
+      hasSignedSubmission,
+      eligibleForDepartmentPlan: Boolean(
+        publicPlan
+        && publicPlan.status === 'supervisor_accepted'
+        && publicPlan.signature
+      ),
+      submissionState,
+      plan: publicPlan,
     };
-  });
+  }));
 
-  const submittedStatuses = new Set(['submitted_to_supervisor', 'supervisor_accepted']);
   const returnedStatuses = new Set(['supervisor_returned']);
   const acceptedStatuses = new Set(['supervisor_accepted']);
 
@@ -966,12 +1104,33 @@ async function getSupervisorPlanDashboard(filters = {}) {
     acceptedCount: employees.filter((employee) => employee.plan && acceptedStatuses.has(employee.plan.status)).length,
     returnedCount: employees.filter((employee) => employee.plan && returnedStatuses.has(employee.plan.status)).length,
     missingCount: employees.filter((employee) => !employee.plan).length,
+    signedSubmissionCount: employees.filter((employee) => employee.hasSignedSubmission).length,
+    unsignedSubmissionCount: employees.filter((employee) => (
+      employee.plan
+      && submittedStatuses.has(employee.plan.status)
+      && !employee.plan.signature
+    )).length,
+    eligibleEmployeeCount: employees.filter((employee) => employee.eligibleForDepartmentPlan).length,
+    notSubmittedCount: employees.filter((employee) => !employee.hasSignedSubmission).length,
+    includedPlannedHours: employees
+      .filter((employee) => employee.hasSignedSubmission)
+      .reduce((total, employee) => total + employee.plan.plannedHours, 0),
+    departmentPlan: departmentPlanResult.rows[0]
+      ? {
+          planId: departmentPlanResult.rows[0].plan_id,
+          status: departmentPlanResult.rows[0].status,
+          remarks: departmentPlanResult.rows[0].remarks || '',
+          createdAt: iso(departmentPlanResult.rows[0].created_at),
+          updatedAt: iso(departmentPlanResult.rows[0].updated_at),
+        }
+      : null,
     employees,
   };
 }
 
 async function createDepartmentPlanFromEmployeeDrafts(planData, createdBy) {
   const departmentId = normalize(planData.departmentId);
+  const supervisorUserId = normalize(planData.supervisorUserId);
   const periodType = normalizePeriodType(planData.periodType || 'weekly');
   const periodStartDate = normalizeDate(planData.periodStartDate, 'periodStartDate');
   const periodEndDate = normalizeDate(planData.periodEndDate, 'periodEndDate');
@@ -982,6 +1141,41 @@ async function createDepartmentPlanFromEmployeeDrafts(planData, createdBy) {
   }
 
   return transaction(async (client) => {
+    const lockKey = [
+      'department-plan-create',
+      departmentId,
+      periodType,
+      periodStartDate,
+      periodEndDate,
+    ].join(':');
+    await client.query(
+      'SELECT pg_advisory_xact_lock(hashtext($1)::BIGINT);',
+      [lockKey]
+    );
+
+    const existingDepartmentPlan = await client.query(
+      `
+        SELECT plan_id, status
+        FROM overtime_plans
+        WHERE department_id = $1
+          AND COALESCE(plan_scope, 'employee') = 'department'
+          AND period_type = $2
+          AND period_start_date = $3
+          AND period_end_date = $4
+        ORDER BY updated_at DESC, created_at DESC
+        LIMIT 1;
+      `,
+      [departmentId, periodType, periodStartDate, periodEndDate]
+    );
+
+    if (existingDepartmentPlan.rows.length > 0) {
+      throw new AppError(
+        'A Department OT Plan already exists for this period.',
+        409,
+        'DEPARTMENT_PLAN_ALREADY_EXISTS'
+      );
+    }
+
     const acceptedPlans = await client.query(
       `
         SELECT op.plan_id
@@ -992,9 +1186,20 @@ async function createDepartmentPlanFromEmployeeDrafts(planData, createdBy) {
           AND op.period_start_date = $3
           AND op.period_end_date = $4
           AND op.status = 'supervisor_accepted'
+          AND (
+            $5 = ''
+            OR EXISTS (
+              SELECT 1
+              FROM overtime_plan_items scoped_item
+              INNER JOIN employees scoped_employee
+                ON scoped_employee.employee_id = scoped_item.employee_id
+              WHERE scoped_item.plan_id = op.plan_id
+                AND scoped_employee.supervisor_user_id = $5
+            )
+          )
         ORDER BY op.created_at ASC;
       `,
-      [departmentId, periodType, periodStartDate, periodEndDate]
+      [departmentId, periodType, periodStartDate, periodEndDate, supervisorUserId]
     );
 
     if (acceptedPlans.rows.length === 0) {
@@ -1010,6 +1215,8 @@ async function createDepartmentPlanFromEmployeeDrafts(planData, createdBy) {
           ON signature_record.plan_id = opi.plan_id
          AND signature_record.employee_id = opi.employee_id
          AND signature_record.status = 'active'
+         AND signature_record.signer_role = 'employee'
+         AND signature_record.confirmation_method = 'self'
         WHERE opi.plan_id = ANY($1)
           AND signature_record.signature_record_id IS NULL
         ORDER BY opi.plan_id ASC, opi.employee_id ASC;
@@ -1019,7 +1226,7 @@ async function createDepartmentPlanFromEmployeeDrafts(planData, createdBy) {
 
     if (unsignedItems.rows.length > 0) {
       throw new AppError(
-        'A supervisor-accepted employee plan is missing an active employee signature.',
+        'A supervisor-accepted employee plan is missing an active employee self-signature.',
         409,
         'ACCEPTED_PLAN_SIGNATURE_MISSING'
       );
@@ -1039,6 +1246,8 @@ async function createDepartmentPlanFromEmployeeDrafts(planData, createdBy) {
           ON signature_record.plan_id = opi.plan_id
          AND signature_record.employee_id = opi.employee_id
          AND signature_record.status = 'active'
+         AND signature_record.signer_role = 'employee'
+         AND signature_record.confirmation_method = 'self'
         WHERE op.plan_id = ANY($1)
         ORDER BY opi.employee_id, opi.planned_date, op.updated_at DESC;
       `,
@@ -1288,11 +1497,44 @@ async function startDepartmentPlanApproval(planId, actionByUser, remarks) {
 
     const activeRoute = await getActiveApprovalRouteForDepartment(plan.departmentId, client);
     const assignedApprovers = buildApprovalAssignments(activeRoute);
+    let supervisorSubmission = null;
+
+    if (actionByUser.role === 'supervisor') {
+      const supervisorAssignment = assignedApprovers.find((approver) => (
+        approver.approverRole === 'supervisor'
+        && approver.approverUserId === actionByUser.id
+      ));
+
+      if (!supervisorAssignment) {
+        throw new AppError(
+          'You must be the assigned supervisor approver to submit and sign this Department OT Plan.',
+          403,
+          'SUPERVISOR_APPROVAL_ASSIGNMENT_MISMATCH'
+        );
+      }
+
+      const savedSignature = await getUserSignature(actionByUser.id, client);
+
+      if (!savedSignature) {
+        throw new AppError(
+          'Save a signature before submitting this Department OT Plan for approval.',
+          400,
+          'SIGNATURE_REQUIRED'
+        );
+      }
+
+      supervisorSubmission = {
+        assignment: supervisorAssignment,
+        signature: savedSignature,
+      };
+    }
 
     await client.query('DELETE FROM overtime_plan_approvals WHERE plan_id = $1;', [plan.planId]);
 
+    let supervisorSubmissionApprovalId = '';
     for (let index = 0; index < assignedApprovers.length; index += 1) {
       const approver = assignedApprovers[index];
+      const approvalId = makeId('OTAPPROVAL');
       await client.query(
         `
           INSERT INTO overtime_plan_approvals (
@@ -1309,13 +1551,40 @@ async function startDepartmentPlanApproval(planId, actionByUser, remarks) {
           VALUES ($1, $2, $3, NULL, $4, $5, $6, NULLIF($7, ''), 'pending');
         `,
         [
-          makeId('OTAPPROVAL'),
+          approvalId,
           plan.planId,
           activeRoute.routeId,
           index + 1,
           approver.approvalLabel || createApprovalLabel(approver.approverRole),
           approver.approverRole,
           approver.approverUserId || '',
+        ]
+      );
+
+      if (supervisorSubmission && approver === supervisorSubmission.assignment) {
+        supervisorSubmissionApprovalId = approvalId;
+      }
+    }
+
+    if (supervisorSubmission) {
+      await client.query(
+        `
+          UPDATE overtime_plan_approvals
+          SET status = 'approved',
+              acted_by = $2,
+              acted_at = NOW(),
+              remarks = $3,
+              signature_file_path = $4,
+              signature_mime_type = $5
+          WHERE approval_id = $1
+            AND status = 'pending';
+        `,
+        [
+          supervisorSubmissionApprovalId,
+          actionByUser.id,
+          nullable(remarks) || 'Department OT Plan submitted and signed by the supervisor.',
+          supervisorSubmission.signature.signatureFilePath,
+          supervisorSubmission.signature.mimeType,
         ]
       );
     }
@@ -1348,7 +1617,17 @@ async function startDepartmentPlanApproval(planId, actionByUser, remarks) {
       ]
     );
 
-    await addPlanLog(plan.planId, 'department_plan_submitted_for_assigned_approval', actionByUser.id, remarks || 'Department OT plan submitted to assigned approvers.', client);
+    await addPlanLog(
+      plan.planId,
+      supervisorSubmission
+        ? 'department_plan_submitted_and_signed_by_supervisor'
+        : 'department_plan_submitted_for_assigned_approval',
+      actionByUser.id,
+      remarks || (supervisorSubmission
+        ? 'Department OT Plan submitted and signed by the supervisor.'
+        : 'Department OT plan submitted to assigned approvers.'),
+      client
+    );
     return getDepartmentPlanApprovalDetails(plan.planId, client);
   });
 }
