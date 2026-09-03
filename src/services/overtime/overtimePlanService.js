@@ -311,6 +311,7 @@ function mapPlan(row) {
     departmentSubmittedBy: row.department_submitted_by || '',
     departmentSubmittedAt: iso(row.department_submitted_at),
     itemCount: toNumber(row.item_count),
+    employeeCount: toNumber(row.employee_count),
     plannedHours: toNumber(row.planned_hours),
     createdBy: row.created_by,
     createdByName,
@@ -378,6 +379,7 @@ const planSelect = `
     op.*,
     d.department_name,
     COALESCE(item_summary.item_count, 0)::INTEGER AS item_count,
+    COALESCE(item_summary.employee_count, 0)::INTEGER AS employee_count,
     COALESCE(item_summary.planned_hours, 0)::NUMERIC AS planned_hours,
     created_by_user.first_name AS created_by_first_name,
     created_by_user.middle_name AS created_by_middle_name,
@@ -397,7 +399,11 @@ const planSelect = `
   FROM overtime_plans op
   INNER JOIN departments d ON d.department_id = op.department_id
   LEFT JOIN (
-    SELECT plan_id, COUNT(*) AS item_count, COALESCE(SUM(planned_hours), 0) AS planned_hours
+    SELECT
+      plan_id,
+      COUNT(*) AS item_count,
+      COUNT(DISTINCT employee_id) AS employee_count,
+      COALESCE(SUM(planned_hours), 0) AS planned_hours
     FROM overtime_plan_items
     GROUP BY plan_id
   ) item_summary ON item_summary.plan_id = op.plan_id

@@ -24,6 +24,7 @@ const ACTION_TITLES = {
   employee_plan_signed_by_supervisor_on_behalf: 'Plan signed by supervisor',
   department_plan_created_from_employee_drafts: 'Department plan created',
   department_plan_submitted_for_assigned_approval: 'Department plan submitted for approval',
+  department_plan_submitted_and_signed_by_supervisor: 'Department plan signed by supervisor',
   assigned_preliminary_approval_approved: 'Approval step completed',
   department_plan_final_approved: 'Department plan approved',
   department_plan_returned_for_revision: 'Department plan returned for revision',

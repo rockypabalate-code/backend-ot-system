@@ -58,6 +58,7 @@ Public auth:
 
 Supervisor profile:
   GET /api/auth/me
+  GET /api/overtime/employees/me
 
 Supervisor view-only master data:
   GET /api/overtime/departments
@@ -89,6 +90,7 @@ Supervisor planned overtime endpoints:
   PATCH  /api/overtime/plans/:planId/close
   PATCH  /api/overtime/plans/:planId/supervisor-accept
   PATCH  /api/overtime/plans/:planId/supervisor-return
+  PATCH  /api/overtime/plans/:planId/department-submit-and-sign
   PATCH  /api/overtime/plans/:planId/start-approval
   GET    /api/overtime/plans/:planId/approval-details
   PATCH  /api/overtime/plans/:planId/approval/approve
@@ -242,6 +244,12 @@ Success response:
       "employeeId": null
     }
   }
+
+Linked employment profile:
+  GET /api/overtime/employees/me
+
+This returns the authenticated supervisor's own linked employee record,
+including department, position, shift, employment type, and employee status.
 
 
 3. LIST DEPARTMENTS
@@ -507,8 +515,10 @@ Auth:
   Required supervisor token
 
 Purpose:
-  Show which employees in the supervisor's department have submitted planned
-  overtime for a specific period.
+  Return the weekly Excel-style preparation data for employees assigned to the
+  authenticated supervisor. It includes daily plan entries, employee
+  self-signature evidence, submission state, totals, and any existing
+  Department OT Plan for the selected period.
 
 Required query fields:
   periodType=weekly or monthly
@@ -516,12 +526,14 @@ Required query fields:
   periodEndDate=YYYY-MM-DD
 
 Optional query fields:
-  includeUnassigned=true or false
+  departmentId (admin/HR only)
+  supervisorUserId (admin/HR only)
+  includeUnassigned=true or false (admin/HR only)
 
 For supervisor role:
-  departmentId is optional. If omitted, backend uses the supervisor's linked
-  employee department.
-  supervisorUserId is automatically set to the authenticated supervisor.
+  departmentId and supervisorUserId supplied in the query are ignored.
+  The backend always uses the supervisor's linked employee department and user
+  ID, and includeUnassigned is always false.
 
 Example:
   GET /api/overtime/plans/supervisor-dashboard?periodType=weekly&periodStartDate=2026-07-27&periodEndDate=2026-08-02
@@ -532,7 +544,7 @@ Success response:
     "supervisorDashboard": {
       "departmentId": "DEP-...",
       "supervisorUserId": "supervisor-user-id",
-      "includeUnassigned": true,
+      "includeUnassigned": false,
       "periodType": "weekly",
       "periodStartDate": "2026-07-27",
       "periodEndDate": "2026-08-02",
@@ -541,16 +553,41 @@ Success response:
       "acceptedCount": 2,
       "returnedCount": 1,
       "missingCount": 2,
+      "signedSubmissionCount": 3,
+      "unsignedSubmissionCount": 0,
+      "eligibleEmployeeCount": 2,
+      "notSubmittedCount": 2,
+      "includedPlannedHours": 9,
+      "departmentPlan": null,
       "employees": [
         {
           "employeeId": "EMP-...",
           "employeeName": "Juan D Cruz",
           "hasPlan": true,
+          "hasSignedSubmission": true,
+          "eligibleForDepartmentPlan": false,
+          "submissionState": "submitted_signed",
           "plan": {
             "planId": "PLAN-...",
             "status": "submitted_to_supervisor",
             "itemCount": 1,
-            "plannedHours": 3
+            "plannedHours": 3,
+            "items": [
+              {
+                "planItemId": "PLANITEM-...",
+                "plannedDate": "2026-07-27",
+                "plannedHours": 3,
+                "reason": "Production support"
+              }
+            ],
+            "signature": {
+              "signatureRecordId": "PLANSIGN-...",
+              "signerRole": "employee",
+              "confirmationMethod": "self",
+              "signedAt": "2026-07-26T10:00:00.000Z",
+              "signedUrl": "temporary-signature-preview-url",
+              "previewAvailable": true
+            }
           }
         }
       ]
@@ -654,12 +691,17 @@ Request body:
   }
 
 For supervisor role:
-  departmentId is optional. If omitted, backend uses the supervisor's linked
-  employee department.
+  departmentId and supervisorUserId in the request body are ignored. The
+  backend always uses the authenticated supervisor's linked department and
+  assignment scope.
 
 Rules:
   There must be at least one employee plan with status supervisor_accepted for
   the department and period.
+  Every copied employee plan must have an active signature made by that
+  employee using confirmationMethod=self.
+  Only employees assigned to the authenticated supervisor are copied.
+  Only one Department OT Plan can exist for the same department and period.
 
 Success response:
   Status: 201
@@ -672,7 +714,15 @@ Success response:
       "periodEndDate": "2026-08-02",
       "status": "draft",
       "planScope": "department",
-      "items": []
+      "items": [
+        {
+          "employeeId": "EMP-...",
+          "plannedDate": "2026-07-27",
+          "plannedHours": 3,
+          "reason": "Production support",
+          "sourceEmployeePlanId": "PLAN-..."
+        }
+      ]
     }
   }
 
@@ -680,6 +730,8 @@ Error responses:
   400 - No supervisor-accepted employee OT plans found for this period.
   400 - Accepted employee plans do not contain plan items.
   403 - Only supervisor, admin, or HR can create department OT plans from employee drafts.
+  409 - A supervisor-accepted employee plan is missing an active employee self-signature.
+  409 - A Department OT Plan already exists for this period.
 
 
 13. CREATE OVERTIME PLAN
@@ -967,17 +1019,20 @@ Success response:
 21. SUBMIT DEPARTMENT PLAN TO APPROVAL ROUTE
 ============================================
 
-Endpoint:
-  PATCH /api/overtime/plans/:planId/submit
+Recommended supervisor endpoint:
+  PATCH /api/overtime/plans/:planId/department-submit-and-sign
 
-Alternative endpoint:
+Compatible endpoint:
   PATCH /api/overtime/plans/:planId/start-approval
 
 Auth:
   Required supervisor token
 
 Purpose:
-  Submit a department-scope plan into the assigned approval route.
+  Submit a department-scope plan into the assigned approval route and apply the
+  authenticated supervisor's saved signature automatically. The supervisor
+  approval is completed in the same transaction and the plan advances to
+  Japanese Management, then HR/Admin final approval.
 
 Request body:
   {
@@ -989,6 +1044,8 @@ Rules:
   Plan status must be draft or returned_for_revision.
   Plan must contain at least one item.
   The department must have an active approval route.
+  The authenticated supervisor must be the assigned supervisor approver.
+  The supervisor must have an active saved signature.
 
 Success response:
   Status: 200
@@ -997,8 +1054,19 @@ Success response:
       "planId": "DEPTPLAN-...",
       "status": "pending_approval",
       "departmentSubmittedBy": "supervisor-user-id",
-      "currentApproverRole": "supervisor",
-      "approvals": []
+      "currentApproverRole": "japanese_management",
+      "approvals": [
+        {
+          "approverRole": "supervisor",
+          "status": "approved",
+          "actedBy": "supervisor-user-id",
+          "signatureFilePath": "users/supervisor-user-id/signature.png"
+        },
+        {
+          "approverRole": "japanese_management",
+          "status": "pending"
+        }
+      ]
     }
   }
 
@@ -1006,6 +1074,8 @@ Error responses:
   400 - Only department OT plans can be submitted to the approval route.
   400 - Only draft or returned department OT plans can be submitted for approval.
   400 - Add at least one plan item before submitting the department OT plan.
+  400 - Save a signature before submitting this Department OT Plan for approval.
+  403 - You must be the assigned supervisor approver to submit and sign this Department OT Plan.
 
 
 22. LIST MY PENDING DEPARTMENT PLAN APPROVALS
@@ -1221,9 +1291,12 @@ SUPERVISOR TESTING WORKFLOW
    POST  /api/overtime/plans/department/from-drafts
 
 9. Supervisor submits department plan for assigned approval:
-   PATCH /api/overtime/plans/:planId/submit
+   PATCH /api/overtime/plans/:planId/department-submit-and-sign
 
-10. Supervisor handles assigned department approval steps:
+10. Japanese Management and HR/Admin handle the remaining approval steps.
+    The supervisor step was signed and completed automatically during step 9.
+
+11. Supervisor views assigned department approval steps when applicable:
    GET   /api/overtime/plans/pending-approvals
    PATCH /api/overtime/plans/:planId/approval/approve
    PATCH /api/overtime/plans/:planId/approval/reject

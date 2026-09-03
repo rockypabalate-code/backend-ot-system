@@ -399,6 +399,309 @@ test('an employee can retrieve only their own employee profile', async () => {
   }
 });
 
+test('a supervisor can retrieve only their own linked employee profile', async () => {
+  const originalVerifyToken = authService.verifyToken;
+  const originalGetEmployeeByUserId = overtimeService.getEmployeeByUserId;
+  const employee = {
+    employeeId: 'EMP-SUPERVISOR',
+    userId: 'user-supervisor',
+    employeeNo: 'SUP-001',
+    fullName: 'Test Supervisor',
+    departmentName: 'Engineering',
+    position: 'Supervisor',
+  };
+
+  authService.verifyToken = async () => ({
+    toJSON() {
+      return { id: 'user-supervisor', role: 'supervisor', status: 'active' };
+    },
+  });
+  overtimeService.getEmployeeByUserId = async (userId) => {
+    assert.equal(userId, 'user-supervisor');
+    return employee;
+  };
+
+  try {
+    await withServer(async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/overtime/employees/me`, {
+        headers: { Authorization: 'Bearer supervisor-token' },
+      });
+      const body = await response.json();
+
+      assert.equal(response.status, 200);
+      assert.deepEqual(body, { employee });
+    });
+  } finally {
+    authService.verifyToken = originalVerifyToken;
+    overtimeService.getEmployeeByUserId = originalGetEmployeeByUserId;
+  }
+});
+
+test('a supervisor employee list is forced to their department and assignments', async () => {
+  const originalVerifyToken = authService.verifyToken;
+  const originalGetEmployeeByUserId = overtimeService.getEmployeeByUserId;
+  const originalGetEmployees = overtimeService.getEmployees;
+  const employees = [{
+    employeeId: 'EMP-TEAM-1',
+    userId: 'user-team-1',
+    fullName: 'Assigned Employee',
+    departmentId: 'DEP-SUPERVISOR',
+    supervisorUserId: 'user-supervisor',
+  }];
+
+  authService.verifyToken = async () => ({
+    toJSON() {
+      return { id: 'user-supervisor', role: 'supervisor', status: 'active' };
+    },
+  });
+  overtimeService.getEmployeeByUserId = async (userId) => {
+    assert.equal(userId, 'user-supervisor');
+    return { employeeId: 'EMP-SUPERVISOR', departmentId: 'DEP-SUPERVISOR' };
+  };
+  overtimeService.getEmployees = async (filters) => {
+    assert.equal(filters.departmentId, 'DEP-SUPERVISOR');
+    assert.equal(filters.supervisorUserId, 'user-supervisor');
+    return employees;
+  };
+
+  try {
+    await withServer(async (baseUrl) => {
+      const response = await fetch(
+        `${baseUrl}/api/overtime/employees?departmentId=DEP-OTHER&supervisorUserId=user-other`,
+        { headers: { Authorization: 'Bearer supervisor-token' } }
+      );
+      const body = await response.json();
+
+      assert.equal(response.status, 200);
+      assert.deepEqual(body, { employees });
+    });
+  } finally {
+    authService.verifyToken = originalVerifyToken;
+    overtimeService.getEmployeeByUserId = originalGetEmployeeByUserId;
+    overtimeService.getEmployees = originalGetEmployees;
+  }
+});
+
+test('a supervisor can view an assigned employee profile in their department', async () => {
+  const originalVerifyToken = authService.verifyToken;
+  const originalGetEmployeeByUserId = overtimeService.getEmployeeByUserId;
+  const originalGetEmployeeById = overtimeService.getEmployeeById;
+  const employee = {
+    employeeId: 'EMP-TEAM-1',
+    userId: 'user-team-1',
+    fullName: 'Assigned Employee',
+    departmentId: 'DEP-SUPERVISOR',
+    supervisorUserId: 'user-supervisor',
+  };
+
+  authService.verifyToken = async () => ({
+    toJSON() {
+      return { id: 'user-supervisor', role: 'supervisor', status: 'active' };
+    },
+  });
+  overtimeService.getEmployeeByUserId = async () => ({
+    employeeId: 'EMP-SUPERVISOR',
+    departmentId: 'DEP-SUPERVISOR',
+  });
+  overtimeService.getEmployeeById = async (employeeId) => {
+    assert.equal(employeeId, 'EMP-TEAM-1');
+    return employee;
+  };
+
+  try {
+    await withServer(async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/overtime/employees/EMP-TEAM-1`, {
+        headers: { Authorization: 'Bearer supervisor-token' },
+      });
+      const body = await response.json();
+
+      assert.equal(response.status, 200);
+      assert.deepEqual(body, { employee });
+    });
+  } finally {
+    authService.verifyToken = originalVerifyToken;
+    overtimeService.getEmployeeByUserId = originalGetEmployeeByUserId;
+    overtimeService.getEmployeeById = originalGetEmployeeById;
+  }
+});
+
+test('a supervisor department preparation is forced to their assigned team', async () => {
+  const originalVerifyToken = authService.verifyToken;
+  const originalGetEmployeeByUserId = overtimeService.getEmployeeByUserId;
+  const originalGetSupervisorPlanDashboard = overtimeService.getSupervisorPlanDashboard;
+  const dashboard = {
+    departmentId: 'DEP-SUPERVISOR',
+    supervisorUserId: 'user-supervisor',
+    includeUnassigned: false,
+    periodType: 'weekly',
+    periodStartDate: '2026-08-31',
+    periodEndDate: '2026-09-06',
+    totalEmployees: 1,
+    signedSubmissionCount: 1,
+    notSubmittedCount: 0,
+    employees: [],
+  };
+
+  authService.verifyToken = async () => ({
+    toJSON() {
+      return { id: 'user-supervisor', role: 'supervisor', status: 'active' };
+    },
+  });
+  overtimeService.getEmployeeByUserId = async (userId) => {
+    assert.equal(userId, 'user-supervisor');
+    return { employeeId: 'EMP-SUPERVISOR', departmentId: 'DEP-SUPERVISOR' };
+  };
+  overtimeService.getSupervisorPlanDashboard = async (filters) => {
+    assert.equal(filters.departmentId, 'DEP-SUPERVISOR');
+    assert.equal(filters.supervisorUserId, 'user-supervisor');
+    assert.equal(filters.includeUnassigned, false);
+    assert.equal(filters.periodType, 'weekly');
+    assert.equal(filters.periodStartDate, '2026-08-31');
+    assert.equal(filters.periodEndDate, '2026-09-06');
+    return dashboard;
+  };
+
+  try {
+    await withServer(async (baseUrl) => {
+      const response = await fetch(
+        `${baseUrl}/api/overtime/plans/supervisor-dashboard?departmentId=DEP-OTHER&includeUnassigned=true&periodType=weekly&periodStartDate=2026-08-31&periodEndDate=2026-09-06`,
+        { headers: { Authorization: 'Bearer supervisor-token' } }
+      );
+      const body = await response.json();
+
+      assert.equal(response.status, 200);
+      assert.deepEqual(body, { supervisorDashboard: dashboard });
+    });
+  } finally {
+    authService.verifyToken = originalVerifyToken;
+    overtimeService.getEmployeeByUserId = originalGetEmployeeByUserId;
+    overtimeService.getSupervisorPlanDashboard = originalGetSupervisorPlanDashboard;
+  }
+});
+
+test('a supervisor prepares a department plan only for their own assignment scope', async () => {
+  const originalVerifyToken = authService.verifyToken;
+  const originalGetEmployeeByUserId = overtimeService.getEmployeeByUserId;
+  const originalCreateDepartmentPlan = overtimeService.createDepartmentPlanFromEmployeeDrafts;
+  const overtimePlan = {
+    planId: 'DEPTPLAN-TEST',
+    departmentId: 'DEP-SUPERVISOR',
+    planScope: 'department',
+    status: 'draft',
+  };
+
+  authService.verifyToken = async () => ({
+    toJSON() {
+      return { id: 'user-supervisor', role: 'supervisor', status: 'active' };
+    },
+  });
+  overtimeService.getEmployeeByUserId = async () => ({
+    employeeId: 'EMP-SUPERVISOR',
+    departmentId: 'DEP-SUPERVISOR',
+  });
+  overtimeService.createDepartmentPlanFromEmployeeDrafts = async (planData, createdBy) => {
+    assert.equal(planData.departmentId, 'DEP-SUPERVISOR');
+    assert.equal(planData.supervisorUserId, 'user-supervisor');
+    assert.equal(planData.periodType, 'weekly');
+    assert.equal(planData.periodStartDate, '2026-08-31');
+    assert.equal(planData.periodEndDate, '2026-09-06');
+    assert.equal(createdBy, 'user-supervisor');
+    return overtimePlan;
+  };
+
+  try {
+    await withServer(async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/overtime/plans/department/from-drafts`, {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer supervisor-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          periodType: 'weekly',
+          periodStartDate: '2026-08-31',
+          periodEndDate: '2026-09-06',
+          remarks: 'Weekly department plan.',
+        }),
+      });
+      const body = await response.json();
+
+      assert.equal(response.status, 201);
+      assert.deepEqual(body, { overtimePlan });
+    });
+  } finally {
+    authService.verifyToken = originalVerifyToken;
+    overtimeService.getEmployeeByUserId = originalGetEmployeeByUserId;
+    overtimeService.createDepartmentPlanFromEmployeeDrafts = originalCreateDepartmentPlan;
+  }
+});
+
+test('a supervisor submits and signs a department plan through one endpoint', async () => {
+  const originalVerifyToken = authService.verifyToken;
+  const originalGetEmployeeByUserId = overtimeService.getEmployeeByUserId;
+  const originalGetOvertimePlan = overtimeService.getOvertimePlan;
+  const originalStartApproval = overtimeService.startDepartmentPlanApproval;
+  const submittedPlan = {
+    planId: 'DEPTPLAN-SIGNED',
+    departmentId: 'DEP-SUPERVISOR',
+    planScope: 'department',
+    status: 'pending_approval',
+    currentApproverRole: 'japanese_management',
+    approvals: [
+      { approverRole: 'supervisor', status: 'approved', actedBy: 'user-supervisor' },
+      { approverRole: 'japanese_management', status: 'pending' },
+    ],
+  };
+
+  authService.verifyToken = async () => ({
+    toJSON() {
+      return { id: 'user-supervisor', role: 'supervisor', status: 'active' };
+    },
+  });
+  overtimeService.getEmployeeByUserId = async () => ({
+    employeeId: 'EMP-SUPERVISOR',
+    departmentId: 'DEP-SUPERVISOR',
+  });
+  overtimeService.getOvertimePlan = async (planId) => ({
+    planId,
+    departmentId: 'DEP-SUPERVISOR',
+    planScope: 'department',
+    status: 'draft',
+  });
+  overtimeService.startDepartmentPlanApproval = async (planId, user, remarks) => {
+    assert.equal(planId, 'DEPTPLAN-SIGNED');
+    assert.equal(user.id, 'user-supervisor');
+    assert.equal(user.role, 'supervisor');
+    assert.equal(remarks, 'Submitted and confirmed.');
+    return submittedPlan;
+  };
+
+  try {
+    await withServer(async (baseUrl) => {
+      const response = await fetch(
+        `${baseUrl}/api/overtime/plans/DEPTPLAN-SIGNED/department-submit-and-sign`,
+        {
+          method: 'PATCH',
+          headers: {
+            Authorization: 'Bearer supervisor-token',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ remarks: 'Submitted and confirmed.' }),
+        }
+      );
+      const body = await response.json();
+
+      assert.equal(response.status, 200);
+      assert.deepEqual(body, { overtimePlan: submittedPlan });
+    });
+  } finally {
+    authService.verifyToken = originalVerifyToken;
+    overtimeService.getEmployeeByUserId = originalGetEmployeeByUserId;
+    overtimeService.getOvertimePlan = originalGetOvertimePlan;
+    overtimeService.startDepartmentPlanApproval = originalStartApproval;
+  }
+});
+
 test('an employee calendar summary includes scoped daily plan statuses', async () => {
   const originalVerifyToken = authService.verifyToken;
   const originalGetEmployeeByUserId = overtimeService.getEmployeeByUserId;
