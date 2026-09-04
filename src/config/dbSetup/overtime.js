@@ -464,6 +464,7 @@ async function applyOvertimeSchema() {
       period_end_date DATE NOT NULL,
       status TEXT NOT NULL DEFAULT 'draft',
       plan_scope TEXT NOT NULL DEFAULT 'employee',
+      employee_signatures_required BOOLEAN NOT NULL DEFAULT TRUE,
       route_id TEXT REFERENCES overtime_plan_approval_routes(route_id) ON DELETE SET NULL,
       current_step_order INTEGER,
       current_approval_id TEXT,
@@ -568,6 +569,7 @@ async function applyOvertimeSchema() {
   await query('ALTER TABLE overtime_plans ADD COLUMN IF NOT EXISTS closed_by TEXT REFERENCES users(id) ON DELETE RESTRICT;');
   await query('ALTER TABLE overtime_plans ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ;');
   await query("ALTER TABLE overtime_plans ADD COLUMN IF NOT EXISTS plan_scope TEXT NOT NULL DEFAULT 'employee';");
+  await query('ALTER TABLE overtime_plans ADD COLUMN IF NOT EXISTS employee_signatures_required BOOLEAN NOT NULL DEFAULT TRUE;');
   await query('ALTER TABLE overtime_plans ADD COLUMN IF NOT EXISTS route_id TEXT REFERENCES overtime_plan_approval_routes(route_id) ON DELETE SET NULL;');
   await query('ALTER TABLE overtime_plans ADD COLUMN IF NOT EXISTS current_step_order INTEGER;');
   await query('ALTER TABLE overtime_plans ADD COLUMN IF NOT EXISTS current_approval_id TEXT;');

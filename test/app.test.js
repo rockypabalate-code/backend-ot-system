@@ -10,7 +10,10 @@ const notificationService = require('../src/services/notificationService');
 const overtimeService = require('../src/services/overtimeDbService');
 const adminController = require('../src/controllers/adminController');
 const departmentWorkflowController = require('../src/controllers/overtime/departmentOtPlanWorkflowController');
-const { buildFinalDocumentWorkbook } = require('../src/services/overtime/finalDocumentService');
+const {
+  buildFinalDocumentWorkbook,
+  validateDocumentData,
+} = require('../src/services/overtime/finalDocumentService');
 const { buildActualOvertimeWorkbook } = require('../src/services/overtime/actualOvertimeDocumentService');
 const {
   addActualActivity,
@@ -19,7 +22,6 @@ const {
   getActualEntryMetrics,
   updateActualEntry,
 } = require('../src/services/overtime/actualOvertimeService');
-const { generateActualDocument } = require('../src/services/overtime/actualOvertimeDocumentService');
 const { validatePurgeRequest } = require('../src/services/overtime/overtimePurgeService');
 
 async function withServer(callback) {
@@ -633,6 +635,138 @@ test('a supervisor prepares a department plan only for their own assignment scop
     authService.verifyToken = originalVerifyToken;
     overtimeService.getEmployeeByUserId = originalGetEmployeeByUserId;
     overtimeService.createDepartmentPlanFromEmployeeDrafts = originalCreateDepartmentPlan;
+  }
+});
+
+test('a supervisor creates a bulk department draft for assigned employees', async () => {
+  const originalVerifyToken = authService.verifyToken;
+  const originalGetEmployeeByUserId = overtimeService.getEmployeeByUserId;
+  const originalCreateBulkDraft = overtimeService.createSupervisorDepartmentPlanDraft;
+  const items = [
+    { employeeId: 'EMP-014', plannedDate: '2026-08-31', plannedHours: 2 },
+    { employeeId: 'EMP-015', plannedDate: '2026-09-01', plannedHours: 1.5 },
+  ];
+
+  authService.verifyToken = async () => ({
+    toJSON() {
+      return { id: 'user-supervisor', role: 'supervisor', status: 'active' };
+    },
+  });
+  overtimeService.getEmployeeByUserId = async () => ({
+    employeeId: 'EMP-SUPERVISOR',
+    departmentId: 'DEP-SUPERVISOR',
+  });
+  overtimeService.createSupervisorDepartmentPlanDraft = async (planData, createdBy) => {
+    assert.equal(planData.departmentId, 'DEP-SUPERVISOR');
+    assert.equal(planData.supervisorUserId, 'user-supervisor');
+    assert.equal(planData.periodType, 'weekly');
+    assert.equal(planData.remarks, 'Weekly production support.');
+    assert.deepEqual(planData.items, items);
+    assert.equal(createdBy, 'user-supervisor');
+    return {
+      planId: 'DEPTPLAN-BULK',
+      planScope: 'department',
+      status: 'draft',
+      items,
+    };
+  };
+
+  try {
+    await withServer(async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/overtime/plans/department/bulk-draft`, {
+        method: 'POST',
+        headers: {
+          Authorization: 'Bearer supervisor-token',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          departmentId: 'DEP-ATTEMPTED-OVERRIDE',
+          periodType: 'weekly',
+          periodStartDate: '2026-08-31',
+          periodEndDate: '2026-09-06',
+          remarks: 'Weekly production support.',
+          items,
+        }),
+      });
+      const body = await response.json();
+
+      assert.equal(response.status, 201);
+      assert.equal(body.message, 'Bulk department overtime draft created successfully.');
+      assert.equal(body.overtimePlan.planId, 'DEPTPLAN-BULK');
+    });
+  } finally {
+    authService.verifyToken = originalVerifyToken;
+    overtimeService.getEmployeeByUserId = originalGetEmployeeByUserId;
+    overtimeService.createSupervisorDepartmentPlanDraft = originalCreateBulkDraft;
+  }
+});
+
+test('a supervisor replaces an editable bulk department draft', async () => {
+  const originalVerifyToken = authService.verifyToken;
+  const originalGetEmployeeByUserId = overtimeService.getEmployeeByUserId;
+  const originalGetOvertimePlan = overtimeService.getOvertimePlan;
+  const originalReplaceBulkDraft = overtimeService.replaceSupervisorDepartmentPlanDraft;
+  const items = [
+    { employeeId: 'EMP-014', plannedDate: '2026-09-02', plannedHours: 3 },
+  ];
+
+  authService.verifyToken = async () => ({
+    toJSON() {
+      return { id: 'user-supervisor', role: 'supervisor', status: 'active' };
+    },
+  });
+  overtimeService.getEmployeeByUserId = async () => ({
+    employeeId: 'EMP-SUPERVISOR',
+    departmentId: 'DEP-SUPERVISOR',
+  });
+  overtimeService.getOvertimePlan = async () => ({
+    planId: 'DEPTPLAN-BULK',
+    departmentId: 'DEP-SUPERVISOR',
+    planScope: 'department',
+    status: 'draft',
+  });
+  overtimeService.replaceSupervisorDepartmentPlanDraft = async (planId, draftData, supervisorUserId) => {
+    assert.equal(planId, 'DEPTPLAN-BULK');
+    assert.equal(draftData.expectedUpdatedAt, '2026-09-03T01:00:00.000Z');
+    assert.equal(draftData.remarks, 'Rebalanced weekly coverage.');
+    assert.deepEqual(draftData.items, items);
+    assert.equal(supervisorUserId, 'user-supervisor');
+    return {
+      planId,
+      status: 'draft',
+      updatedAt: '2026-09-03T02:00:00.000Z',
+      items,
+    };
+  };
+
+  try {
+    await withServer(async (baseUrl) => {
+      const response = await fetch(
+        `${baseUrl}/api/overtime/plans/DEPTPLAN-BULK/department/bulk-draft`,
+        {
+          method: 'PUT',
+          headers: {
+            Authorization: 'Bearer supervisor-token',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            expectedUpdatedAt: '2026-09-03T01:00:00.000Z',
+            remarks: 'Rebalanced weekly coverage.',
+            items,
+          }),
+        }
+      );
+      const body = await response.json();
+
+      assert.equal(response.status, 200);
+      assert.equal(body.message, 'Bulk department overtime draft saved successfully.');
+      assert.equal(body.overtimePlan.updatedAt, '2026-09-03T02:00:00.000Z');
+    });
+  } finally {
+    authService.verifyToken = originalVerifyToken;
+    overtimeService.getEmployeeByUserId = originalGetEmployeeByUserId;
+    overtimeService.getOvertimePlan = originalGetOvertimePlan;
+    overtimeService.replaceSupervisorDepartmentPlanDraft = originalReplaceBulkDraft;
   }
 });
 
@@ -1529,6 +1663,52 @@ test('Actual OT routes require a bearer token', async () => {
   });
 });
 
+test('a supervisor downloads a finalized Actual OT workbook without a stored document', async () => {
+  const originalVerifyToken = authService.verifyToken;
+  const originalBuildDownload = overtimeService.buildActualDocumentDownload;
+  const workbookBuffer = Buffer.from('PK-test-workbook');
+
+  authService.verifyToken = async () => ({
+    toJSON() {
+      return { id: 'user-supervisor', role: 'supervisor', status: 'active' };
+    },
+  });
+  overtimeService.buildActualDocumentDownload = async (actualPeriodId, user) => {
+    assert.equal(actualPeriodId, 'ACTUALPERIOD-TEST');
+    assert.equal(user.id, 'user-supervisor');
+    return {
+      actualPeriodId,
+      buffer: workbookBuffer,
+      contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      fileName: 'ACTUALPERIOD-TEST.xlsx',
+    };
+  };
+
+  try {
+    await withServer(async (baseUrl) => {
+      const response = await fetch(
+        `${baseUrl}/api/overtime/actual-periods/ACTUALPERIOD-TEST/final-document`,
+        { headers: { Authorization: 'Bearer supervisor-token' } }
+      );
+
+      assert.equal(response.status, 200);
+      assert.equal(
+        response.headers.get('content-type'),
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      );
+      assert.equal(
+        response.headers.get('content-disposition'),
+        'attachment; filename="ACTUALPERIOD-TEST.xlsx"'
+      );
+      assert.equal(response.headers.get('cache-control'), 'private, no-store');
+      assert.deepEqual(Buffer.from(await response.arrayBuffer()), workbookBuffer);
+    });
+  } finally {
+    authService.verifyToken = originalVerifyToken;
+    overtimeService.buildActualDocumentDownload = originalBuildDownload;
+  }
+});
+
 test('untouched Actual OT is pending today and automatically actual after the day', () => {
   const pendingMetrics = getActualEntryMetrics({
     actual_date: '2026-08-21',
@@ -1664,13 +1844,6 @@ test('Actual OT mutation services reject unauthorized or unaudited changes befor
       { id: 'user-supervisor', role: 'supervisor' }
     ),
     (error) => error.code === 'ACTUAL_OVERTIME_FINALIZE_FORBIDDEN'
-  );
-  await assert.rejects(
-    generateActualDocument(
-      'ACTUALPERIOD-TEST',
-      { id: 'user-supervisor', role: 'supervisor' }
-    ),
-    (error) => error.code === 'ACTUAL_DOCUMENT_GENERATE_FORBIDDEN'
   );
 });
 
@@ -1863,6 +2036,59 @@ test('final document builder creates a readable workbook with embedded signature
   assert.equal(worksheet.getCell('A1').value, 'DEPARTMENT OVERTIME PLAN');
   assert.equal(worksheet.getImages().length, 2);
   assert.ok(workbook.getWorksheet('Signature Audit'));
+});
+
+test('final document builder supports supervisor-assigned entries without employee signatures', async () => {
+  const signatureImage = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+    'base64'
+  );
+  const plan = {
+    planId: 'DEPTPLAN-SUPERVISOR-ASSIGNED',
+    departmentId: 'DEP-TEST',
+    departmentName: 'Production',
+    periodStartDate: '2026-08-31',
+    periodEndDate: '2026-09-06',
+    plannedHours: 2,
+    status: 'approved',
+    employeeSignaturesRequired: false,
+    items: [{
+      employeeId: 'EMP-TEST',
+      employeeNo: 'EMP-001',
+      employeeName: 'Test Employee',
+      plannedDate: '2026-09-01',
+      plannedHours: 2,
+      reason: '',
+      sourceEmployeePlanId: '',
+    }],
+  };
+  const approvals = [{
+    approvalId: 'APPROVAL-SUPERVISOR',
+    approverRole: 'supervisor',
+    stepName: 'Supervisor Approval',
+    actedBy: 'user-supervisor',
+    actedByName: 'Test Supervisor',
+    actedAt: '2026-08-31T02:00:00.000Z',
+    status: 'approved',
+    remarks: 'Assigned and approved.',
+    signatureFilePath: 'users/user-supervisor/signature.png',
+    signatureMimeType: 'image/png',
+  }];
+  const images = new Map([
+    ['users/user-supervisor/signature.png', signatureImage],
+  ]);
+
+  assert.doesNotThrow(() => validateDocumentData(plan, [], [{
+    ...approvals[0],
+    approverRole: 'hr',
+  }]));
+  const buffer = await buildFinalDocumentWorkbook(plan, [], approvals, images);
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer);
+  const worksheet = workbook.getWorksheet('Official OT Plan');
+
+  assert.equal(worksheet.getCell('F9').value, 'Assigned by supervisor');
+  assert.equal(worksheet.getImages().length, 1);
 });
 
 test('Actual OT document builder includes actual values, audit history, and signatures', async () => {

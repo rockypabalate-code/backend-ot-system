@@ -35,6 +35,7 @@ const BLOCKING_EMPLOYEE_PLAN_STATUSES = [
 
 const RESETTABLE_PLAN_STATUSES = ['draft', 'supervisor_returned', 'returned_for_revision'];
 const SUPERVISOR_PROTECTED_PLAN_STATUSES = ['approved', 'closed'];
+const MAX_SUPERVISOR_BULK_ITEMS = 500;
 
 function normalizeResetStatus(status, planScope) {
   const normalized = normalize(status || 'draft').toLowerCase();
@@ -70,6 +71,316 @@ function normalizeBool(value, fallback = false) {
   }
 
   return ['true', '1', 'yes', 'y'].includes(String(value).trim().toLowerCase());
+}
+
+function normalizeSupervisorBulkItems(items, plan) {
+  if (!Array.isArray(items) || items.length === 0) {
+    throw new AppError('Select at least one employee overtime entry.', 400, 'PLAN_ITEMS_REQUIRED');
+  }
+
+  if (items.length > MAX_SUPERVISOR_BULK_ITEMS) {
+    throw new AppError(
+      `A maximum of ${MAX_SUPERVISOR_BULK_ITEMS} employee overtime entries can be saved at a time.`,
+      400,
+      'PLAN_ITEMS_LIMIT_EXCEEDED'
+    );
+  }
+
+  const seenEmployeeDates = new Set();
+
+  return items.map((item) => {
+    const employeeId = normalize(item.employeeId);
+    const plannedDate = normalizeDate(item.plannedDate ?? item.date, 'plannedDate');
+    const plannedHours = Number(item.plannedHours ?? item.totalHours);
+
+    if (!employeeId) {
+      throw new AppError('Employee ID is required for every overtime entry.', 400, 'PLAN_ITEM_EMPLOYEE_REQUIRED');
+    }
+
+    if (!Number.isFinite(plannedHours) || plannedHours <= 0 || plannedHours > 9999.99) {
+      throw new AppError(
+        'Planned hours must be greater than zero and no more than 9999.99.',
+        400,
+        'INVALID_PLANNED_HOURS'
+      );
+    }
+
+    if (plannedDate < plan.periodStartDate || plannedDate > plan.periodEndDate) {
+      throw new AppError(
+        'Every planned date must be within the overtime plan period.',
+        400,
+        'PLAN_ITEM_DATE_OUT_OF_RANGE'
+      );
+    }
+
+    const uniqueKey = `${employeeId}|${plannedDate}`;
+
+    if (seenEmployeeDates.has(uniqueKey)) {
+      throw new AppError(
+        'Duplicate employee/date found in the submitted overtime entries.',
+        409,
+        'DUPLICATE_PLAN_ITEM_IN_REQUEST'
+      );
+    }
+
+    seenEmployeeDates.add(uniqueKey);
+    return {
+      planItemId: makeId('PLANITEM'),
+      employeeId,
+      plannedDate,
+      plannedHours: Math.round(plannedHours * 100) / 100,
+    };
+  });
+}
+
+async function ensureSupervisorBulkEmployeesAreInScope(items, departmentId, supervisorUserId, executor) {
+  const employeeIds = [...new Set(items.map((item) => item.employeeId))];
+  const result = await executor.query(
+    `
+      SELECT e.employee_id
+      FROM employees e
+      INNER JOIN users u ON u.id = e.user_id
+      WHERE e.employee_id = ANY($1::TEXT[])
+        AND e.department_id = $2
+        AND e.supervisor_user_id = $3
+        AND e.status = 'active'
+        AND u.status = 'active';
+    `,
+    [employeeIds, departmentId, supervisorUserId]
+  );
+  const allowedEmployeeIds = new Set(result.rows.map((row) => row.employee_id));
+  const outOfScopeEmployeeIds = employeeIds.filter((employeeId) => !allowedEmployeeIds.has(employeeId));
+
+  if (outOfScopeEmployeeIds.length > 0) {
+    throw new AppError(
+      'Every employee must be active and assigned to the requesting supervisor in the same department.',
+      403,
+      'SUPERVISOR_PLAN_EMPLOYEE_OUT_OF_SCOPE'
+    );
+  }
+}
+
+async function insertSupervisorBulkItems(planId, items, executor) {
+  await executor.query(
+    `
+      INSERT INTO overtime_plan_items (
+        plan_item_id,
+        plan_id,
+        employee_id,
+        planned_date,
+        planned_hours,
+        reason
+      )
+      SELECT
+        bulk_item.plan_item_id,
+        $1,
+        bulk_item.employee_id,
+        bulk_item.planned_date,
+        bulk_item.planned_hours,
+        ''
+      FROM JSONB_TO_RECORDSET($2::JSONB) AS bulk_item(
+        plan_item_id TEXT,
+        employee_id TEXT,
+        planned_date DATE,
+        planned_hours NUMERIC
+      );
+    `,
+    [
+      planId,
+      JSON.stringify(items.map((item) => ({
+        plan_item_id: item.planItemId,
+        employee_id: item.employeeId,
+        planned_date: item.plannedDate,
+        planned_hours: item.plannedHours,
+      }))),
+    ]
+  );
+}
+
+async function lockDepartmentPlanPeriod(plan, executor) {
+  const lockKey = [
+    'department-plan-create',
+    plan.departmentId,
+    plan.periodType,
+    plan.periodStartDate,
+    plan.periodEndDate,
+  ].join(':');
+
+  await executor.query('SELECT pg_advisory_xact_lock(hashtext($1)::BIGINT);', [lockKey]);
+}
+
+async function ensureDepartmentPlanPeriodIsAvailable(plan, executor) {
+  const result = await executor.query(
+    `
+      SELECT plan_id
+      FROM overtime_plans
+      WHERE department_id = $1
+        AND COALESCE(plan_scope, 'employee') = 'department'
+        AND period_type = $2
+        AND period_start_date = $3
+        AND period_end_date = $4
+      LIMIT 1;
+    `,
+    [plan.departmentId, plan.periodType, plan.periodStartDate, plan.periodEndDate]
+  );
+
+  if (result.rows.length > 0) {
+    throw new AppError(
+      'A Department OT Plan already exists for this period.',
+      409,
+      'DEPARTMENT_PLAN_ALREADY_EXISTS'
+    );
+  }
+}
+
+async function createSupervisorDepartmentPlanDraft(planData, createdBy) {
+  const plan = {
+    departmentId: normalize(planData.departmentId),
+    supervisorUserId: normalize(planData.supervisorUserId),
+    periodType: normalizePeriodType(planData.periodType || 'weekly'),
+    periodStartDate: normalizeDate(planData.periodStartDate, 'periodStartDate'),
+    periodEndDate: normalizeDate(planData.periodEndDate, 'periodEndDate'),
+  };
+  validatePlanPeriod(plan.periodType, plan.periodStartDate, plan.periodEndDate);
+
+  if (!plan.departmentId || !plan.supervisorUserId) {
+    throw new AppError(
+      'A linked supervisor and department are required.',
+      403,
+      'SUPERVISOR_DEPARTMENT_REQUIRED'
+    );
+  }
+
+  const items = normalizeSupervisorBulkItems(planData.items, plan);
+
+  return transaction(async (client) => {
+    await lockDepartmentPlanPeriod(plan, client);
+    await ensureDepartmentPlanPeriodIsAvailable(plan, client);
+    await ensureSupervisorBulkEmployeesAreInScope(
+      items,
+      plan.departmentId,
+      plan.supervisorUserId,
+      client
+    );
+
+    const planId = makeId('DEPTPLAN');
+    await client.query(
+      `
+        INSERT INTO overtime_plans (
+          plan_id,
+          department_id,
+          period_type,
+          period_start_date,
+          period_end_date,
+          status,
+          plan_scope,
+          employee_signatures_required,
+          created_by,
+          remarks
+        )
+        VALUES ($1, $2, $3, $4, $5, 'draft', 'department', FALSE, $6, $7);
+      `,
+      [
+        planId,
+        plan.departmentId,
+        plan.periodType,
+        plan.periodStartDate,
+        plan.periodEndDate,
+        normalize(createdBy),
+        nullable(planData.remarks),
+      ]
+    );
+    await insertSupervisorBulkItems(planId, items, client);
+    await addPlanLog(
+      planId,
+      'supervisor_bulk_department_draft_created',
+      createdBy,
+      `Supervisor-created department draft saved with ${items.length} overtime entr${items.length === 1 ? 'y' : 'ies'}.`,
+      client
+    );
+
+    return getOvertimePlan(planId, {}, client);
+  });
+}
+
+async function replaceSupervisorDepartmentPlanDraft(planId, draftData, supervisorUserId) {
+  return transaction(async (client) => {
+    const lockResult = await client.query(
+      'SELECT updated_at FROM overtime_plans WHERE plan_id = $1 FOR UPDATE;',
+      [normalize(planId)]
+    );
+
+    if (lockResult.rows.length === 0) {
+      throw new AppError('Overtime plan not found.', 404, 'PLAN_NOT_FOUND');
+    }
+
+    const expectedUpdatedAt = normalize(draftData.expectedUpdatedAt);
+
+    if (!expectedUpdatedAt || Number.isNaN(new Date(expectedUpdatedAt).getTime())) {
+      throw new AppError(
+        'expectedUpdatedAt must contain the department plan version being edited.',
+        400,
+        'PLAN_VERSION_REQUIRED'
+      );
+    }
+
+    const currentUpdatedAt = new Date(lockResult.rows[0].updated_at).toISOString();
+
+    if (new Date(expectedUpdatedAt).toISOString() !== currentUpdatedAt) {
+      throw new AppError(
+        'This department plan changed after you opened it. Reload before saving.',
+        409,
+        'PLAN_VERSION_CONFLICT'
+      );
+    }
+
+    const existingPlan = await getOvertimePlan(planId, {}, client);
+
+    if ((existingPlan.planScope || 'employee') !== 'department') {
+      throw new AppError(
+        'Only department overtime drafts can be replaced through this endpoint.',
+        400,
+        'PLAN_SCOPE_NOT_DEPARTMENT'
+      );
+    }
+
+    if (!['draft', 'returned_for_revision'].includes(existingPlan.status)) {
+      throw new AppError(
+        'Only draft or returned department plans can be edited.',
+        400,
+        'PLAN_NOT_EDITABLE'
+      );
+    }
+
+    const items = normalizeSupervisorBulkItems(draftData.items, existingPlan);
+    await ensureSupervisorBulkEmployeesAreInScope(
+      items,
+      existingPlan.departmentId,
+      supervisorUserId,
+      client
+    );
+
+    await client.query('DELETE FROM overtime_plan_items WHERE plan_id = $1;', [existingPlan.planId]);
+    await insertSupervisorBulkItems(existingPlan.planId, items, client);
+    await client.query(
+      `
+        UPDATE overtime_plans
+        SET remarks = $2,
+            updated_at = NOW()
+        WHERE plan_id = $1;
+      `,
+      [existingPlan.planId, nullable(draftData.remarks)]
+    );
+    await addPlanLog(
+      existingPlan.planId,
+      'supervisor_bulk_department_draft_saved',
+      supervisorUserId,
+      `Supervisor-created department draft saved with ${items.length} overtime entr${items.length === 1 ? 'y' : 'ies'}.`,
+      client
+    );
+
+    return getOvertimePlan(existingPlan.planId, {}, client);
+  });
 }
 
 function normalizeApprovalRole(role) {
@@ -2108,6 +2419,7 @@ module.exports = {
   approveDepartmentPlanStep,
   createApprovalRoute,
   createDepartmentPlanFromEmployeeDrafts,
+  createSupervisorDepartmentPlanDraft,
   deleteApprovalRouteAssignment,
   deleteApprovalRouteStep,
   getActiveApprovalRouteForDepartment,
@@ -2117,6 +2429,7 @@ module.exports = {
   getPendingDepartmentPlanApprovalsForUser,
   getSupervisorPlanDashboard,
   rejectDepartmentPlanStep,
+  replaceSupervisorDepartmentPlanDraft,
   resetOvertimePlanStatus,
   setApprovalRouteStatus,
   startDepartmentPlanApproval,

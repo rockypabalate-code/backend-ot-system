@@ -1,9 +1,5 @@
-const crypto = require('crypto');
 const ExcelJS = require('exceljs');
-const { query } = require('../../config/database');
 const {
-  getDocumentBucket,
-  getDocumentUrlTtlSeconds,
   getSignatureBucket,
   getStorageClient,
 } = require('../../config/supabaseStorage');
@@ -11,97 +7,9 @@ const AppError = require('../../utils/appError');
 const { getDepartmentPlanApprovalDetails } = require('./departmentOtPlanWorkflowService');
 const { getDepartmentPlanEmployeeSignatures } = require('./employeePlanSignatureService');
 const { getActualPeriod } = require('./actualOvertimeService');
-const { iso, normalize, toNumber } = require('./shared/utils');
+const { normalize, toNumber } = require('./shared/utils');
 
 const XLSX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-
-function mapActualDocument(row) {
-  return {
-    documentId: row.document_id,
-    actualPeriodId: row.actual_period_id,
-    filePath: row.file_path || '',
-    fileType: row.file_type,
-    generatedBy: row.generated_by || '',
-    generatedAt: iso(row.generated_at),
-    status: row.status,
-    errorMessage: row.error_message || '',
-    createdAt: iso(row.created_at),
-    updatedAt: iso(row.updated_at),
-  };
-}
-
-async function findActualDocument(actualPeriodId, executor = { query }) {
-  const result = await executor.query(
-    `
-      SELECT *
-      FROM overtime_actual_documents
-      WHERE actual_period_id = $1
-      LIMIT 1;
-    `,
-    [normalize(actualPeriodId)]
-  );
-  return result.rows[0] ? mapActualDocument(result.rows[0]) : null;
-}
-
-async function markDocumentPending(actualPeriodId, generatedBy) {
-  const result = await query(
-    `
-      INSERT INTO overtime_actual_documents (
-        document_id,
-        actual_period_id,
-        generated_by,
-        status
-      )
-      VALUES ($1, $2, $3, 'pending')
-      ON CONFLICT (actual_period_id)
-      DO UPDATE SET
-        file_path = NULL,
-        generated_by = EXCLUDED.generated_by,
-        generated_at = NULL,
-        status = 'pending',
-        error_message = NULL,
-        updated_at = NOW()
-      RETURNING *;
-    `,
-    [`ACTUALDOCUMENT-${crypto.randomUUID()}`, normalize(actualPeriodId), normalize(generatedBy)]
-  );
-  return mapActualDocument(result.rows[0]);
-}
-
-async function markDocumentReady(documentId, filePath) {
-  const result = await query(
-    `
-      UPDATE overtime_actual_documents
-      SET file_path = $2,
-          status = 'ready',
-          generated_at = NOW(),
-          error_message = NULL,
-          updated_at = NOW()
-      WHERE document_id = $1
-      RETURNING *;
-    `,
-    [documentId, filePath]
-  );
-  return mapActualDocument(result.rows[0]);
-}
-
-async function markDocumentFailed(documentId, error) {
-  if (!documentId) return;
-  try {
-    await query(
-      `
-        UPDATE overtime_actual_documents
-        SET status = 'failed',
-            error_message = $2,
-            updated_at = NOW()
-        WHERE document_id = $1;
-      `,
-      [documentId, normalize(error && error.message).slice(0, 1000) || 'Document generation failed.']
-    );
-  } catch (updateError) {
-    console.error('Unable to record Actual OT document failure.', updateError.message);
-  }
-}
 
 function applyHeaderStyle(row) {
   row.font = { bold: true, color: { argb: 'FFFFFFFF' } };
@@ -179,14 +87,20 @@ function formatComments(comments) {
     .join('\n');
 }
 
-function validateDocumentSignatures(actualPeriod, employeeSignatures, approvedApprovals) {
+function validateDocumentSignatures(
+  actualPeriod,
+  employeeSignatures,
+  approvedApprovals,
+  employeeSignaturesRequired = true
+) {
   const employeeSignatureKeys = new Set(employeeSignatures.map((signature) => (
     `${normalize(signature.sourceEmployeePlanId)}:${normalize(signature.employeeId)}`
   )));
-  const missingEmployeeSignature = actualPeriod.entries.some((entry) => (
-    !entry.sourceEmployeePlanId
-    || !employeeSignatureKeys.has(`${normalize(entry.sourceEmployeePlanId)}:${normalize(entry.employeeId)}`)
-  ));
+  const missingEmployeeSignature = employeeSignaturesRequired
+    && actualPeriod.entries.some((entry) => (
+      !entry.sourceEmployeePlanId
+      || !employeeSignatureKeys.has(`${normalize(entry.sourceEmployeePlanId)}:${normalize(entry.employeeId)}`)
+    ));
   if (missingEmployeeSignature) {
     throw new AppError(
       'An Actual OT entry has no accepted employee signature from its source plan.',
@@ -341,24 +255,7 @@ async function buildActualOvertimeWorkbook(
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
-async function uploadDocument(filePath, buffer) {
-  const { error } = await getStorageClient()
-    .storage
-    .from(getDocumentBucket())
-    .upload(filePath, buffer, { contentType: XLSX_CONTENT_TYPE, upsert: true });
-  if (error) {
-    throw new AppError(
-      'Unable to upload the final Actual OT Excel document.',
-      502,
-      'ACTUAL_DOCUMENT_UPLOAD_FAILED'
-    );
-  }
-}
-
-async function generateActualDocument(actualPeriodId, user, options = {}) {
-  if (!['admin', 'hr'].includes(user.role)) {
-    throw new AppError('Only Admin or HR can generate the final Actual OT document.', 403, 'ACTUAL_DOCUMENT_GENERATE_FORBIDDEN');
-  }
+async function buildActualDocumentDownload(actualPeriodId, user) {
   const actualPeriod = await getActualPeriod(actualPeriodId, user);
   if (actualPeriod.status !== 'finalized') {
     throw new AppError(
@@ -368,17 +265,25 @@ async function generateActualDocument(actualPeriodId, user, options = {}) {
     );
   }
 
-  const existingDocument = await findActualDocument(actualPeriod.actualPeriodId);
-  if (existingDocument && existingDocument.status === 'ready' && options.force !== true) {
-    return existingDocument;
-  }
-
-  let document = await markDocumentPending(actualPeriod.actualPeriodId, user.id);
   try {
     const plan = await getDepartmentPlanApprovalDetails(actualPeriod.sourceDepartmentPlanId);
+
+    if (!plan) {
+      throw new AppError(
+        'The source Department OT Plan could not be found.',
+        404,
+        'ACTUAL_DOCUMENT_SOURCE_PLAN_NOT_FOUND'
+      );
+    }
+
     const employeeSignatures = await getDepartmentPlanEmployeeSignatures(actualPeriod.sourceDepartmentPlanId);
     const approvedApprovals = plan.approvals.filter((approval) => approval.status === 'approved');
-    validateDocumentSignatures(actualPeriod, employeeSignatures, approvedApprovals);
+    validateDocumentSignatures(
+      actualPeriod,
+      employeeSignatures,
+      approvedApprovals,
+      plan.employeeSignaturesRequired !== false
+    );
     const signatureImages = await downloadSignatureImages(employeeSignatures, approvedApprovals);
     const buffer = await buildActualOvertimeWorkbook(
       actualPeriod,
@@ -386,43 +291,21 @@ async function generateActualDocument(actualPeriodId, user, options = {}) {
       approvedApprovals,
       signatureImages
     );
-    const filePath = `actual-documents/${actualPeriod.actualPeriodId}/${document.documentId}.xlsx`;
-    await uploadDocument(filePath, buffer);
-    document = await markDocumentReady(document.documentId, filePath);
-    return document;
+
+    return {
+      actualPeriodId: actualPeriod.actualPeriodId,
+      buffer,
+      contentType: XLSX_CONTENT_TYPE,
+      fileName: `${actualPeriod.actualPeriodId}.xlsx`,
+    };
   } catch (error) {
-    await markDocumentFailed(document.documentId, error);
     if (error instanceof AppError) throw error;
     throw new AppError('Unable to generate the final Actual OT Excel document.', 500, 'ACTUAL_DOCUMENT_GENERATION_FAILED');
   }
 }
 
-async function getActualDocument(actualPeriodId, user) {
-  await getActualPeriod(actualPeriodId, user);
-  return findActualDocument(actualPeriodId);
-}
-
-async function createActualDocumentSignedUrl(document) {
-  if (!document || document.status !== 'ready' || !document.filePath) {
-    throw new AppError('The final Actual OT Excel document is not ready.', 409, 'ACTUAL_DOCUMENT_NOT_READY');
-  }
-  const expiresInSeconds = getDocumentUrlTtlSeconds();
-  const { data, error } = await getStorageClient()
-    .storage
-    .from(getDocumentBucket())
-    .createSignedUrl(document.filePath, expiresInSeconds, {
-      download: `${document.actualPeriodId}.xlsx`,
-    });
-  if (error || !data || !data.signedUrl) {
-    throw new AppError('Unable to create an Actual OT document URL.', 502, 'ACTUAL_DOCUMENT_URL_FAILED');
-  }
-  return { ...document, signedUrl: data.signedUrl, expiresInSeconds };
-}
-
 module.exports = {
   buildActualOvertimeWorkbook,
-  createActualDocumentSignedUrl,
-  findActualDocument,
-  generateActualDocument,
-  getActualDocument,
+  buildActualDocumentDownload,
+  validateDocumentSignatures,
 };

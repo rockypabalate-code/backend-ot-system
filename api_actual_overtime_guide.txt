@@ -284,53 +284,15 @@ Success response:
 
 Important:
   Finalization locks all Actual OT adjustments and new comments.
-  Finalization does not generate the Excel file automatically. After this
-  succeeds, call Section 7 to generate the final Actual OT Excel.
+  Finalization does not store an Excel file. After this succeeds, call Section
+  7 or 8 to generate and download the final Actual OT Excel on demand.
 
 
-7. HR/ADMIN GENERATES THE FINAL ACTUAL OT EXCEL
-===============================================
+7. GENERATE AND DOWNLOAD THE FINAL ACTUAL OT EXCEL
+==================================================
 
 Endpoint:
   POST /api/overtime/actual-periods/:actualPeriodId/final-document/generate
-
-Auth:
-  Required Admin or HR token
-
-Normal request body:
-  {}
-
-Force replacement request body:
-  {
-    "force": true
-  }
-
-Success response:
-  {
-    "message": "Final Actual OT Excel document generated successfully.",
-    "finalDocument": {
-      "documentId": "ACTUALDOCUMENT-...",
-      "actualPeriodId": "ACTUALPERIOD-...",
-      "filePath": "actual-documents/ACTUALPERIOD-.../ACTUALDOCUMENT-....xlsx",
-      "fileType": "xlsx",
-      "status": "ready",
-      "signedUrl": "https://...",
-      "expiresInSeconds": 300
-    }
-  }
-
-Error before finalization:
-  {
-    "message": "The Actual OT period must be finalized before generating its Excel document.",
-    "code": "ACTUAL_OVERTIME_NOT_FINALIZED"
-  }
-
-
-8. GET THE FINAL ACTUAL OT EXCEL
-================================
-
-Endpoint:
-  GET /api/overtime/actual-periods/:actualPeriodId/final-document
 
 Auth:
   Required Admin, HR, Supervisor, or Japanese Management token
@@ -339,19 +301,38 @@ Request body:
   {}
 
 Success response:
+  Status: 200
+  Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+  Content-Disposition: attachment; filename="ACTUALPERIOD-....xlsx"
+  Body: Excel file bytes
+
+Error before finalization:
   {
-    "finalDocument": {
-      "documentId": "ACTUALDOCUMENT-...",
-      "actualPeriodId": "ACTUALPERIOD-...",
-      "fileType": "xlsx",
-      "status": "ready",
-      "signedUrl": "https://...",
-      "expiresInSeconds": 300
-    }
+    "message": "The Actual OT period must be finalized before generating its Excel document.",
+    "code": "ACTUAL_OVERTIME_NOT_FINALIZED"
   }
 
-The signed URL is temporary. The Excel remains stored privately in the
-overtime-documents Supabase Storage bucket.
+
+8. DOWNLOAD THE FINAL ACTUAL OT EXCEL
+=====================================
+
+Endpoint:
+  GET /api/overtime/actual-periods/:actualPeriodId/final-document
+
+Auth:
+  Required Admin, HR, Supervisor, or Japanese Management token
+
+Success response:
+  Status: 200
+  Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+  Content-Disposition: attachment; filename="ACTUALPERIOD-....xlsx"
+  Body: Excel file bytes
+
+Storage behavior:
+  Both endpoints build the workbook in server memory and stream it immediately.
+  The Actual OT Excel is not uploaded to Supabase Storage and no new
+  overtime_actual_documents metadata row is created. Signature images are still
+  read from private Supabase Storage so they can be embedded in the workbook.
 
 
 9. ADMIN PERMANENTLY PURGES PLAN AND ACTUAL OT DATABASE DATA

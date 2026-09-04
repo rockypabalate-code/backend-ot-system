@@ -75,6 +75,11 @@ Supervisor Actual OT endpoints:
   POST  /api/overtime/actual-entries/:actualEntryId/comments
   GET   /api/overtime/actual-periods/:actualPeriodId/final-document
 
+Actual OT document behavior:
+  A finalized Actual OT workbook is generated on demand and returned directly
+  as an Excel attachment. It is not saved to Supabase Storage. Employee and
+  approval signature images are still read from private storage for embedding.
+
 Supervisor planned overtime endpoints:
   GET    /api/overtime/plans
   POST   /api/overtime/plans
@@ -83,6 +88,8 @@ Supervisor planned overtime endpoints:
   GET    /api/overtime/plans/supervisor-dashboard
   GET    /api/overtime/plans/pending-approvals
   POST   /api/overtime/plans/department/from-drafts
+  POST   /api/overtime/plans/department/bulk-draft
+  PUT    /api/overtime/plans/:planId/department/bulk-draft
   GET    /api/overtime/plans/:planId
   PATCH  /api/overtime/plans/:planId
   DELETE /api/overtime/plans/:planId
@@ -732,6 +739,114 @@ Error responses:
   403 - Only supervisor, admin, or HR can create department OT plans from employee drafts.
   409 - A supervisor-accepted employee plan is missing an active employee self-signature.
   409 - A Department OT Plan already exists for this period.
+
+
+12A. CREATE OR REPLACE A SUPERVISOR BULK DEPARTMENT DRAFT
+==========================================================
+
+Create endpoint:
+  POST /api/overtime/plans/department/bulk-draft
+
+Replace endpoint:
+  PUT /api/overtime/plans/:planId/department/bulk-draft
+
+Auth:
+  Required supervisor token
+
+Purpose:
+  Save the supervisor calendar matrix as one department-scope draft. Each item
+  represents one employee/date cell. Item-level reasons are intentionally not
+  required; use the plan-level remarks for the weekly or monthly explanation.
+  Employee self-signatures are not required because the supervisor assigns the
+  schedule. The supervisor signature and all later approval-route signatures
+  are still required. The final document labels these entries as "Assigned by
+  supervisor" and leaves the employee signature cell empty.
+
+Create request body:
+  {
+    "periodType": "weekly",
+    "periodStartDate": "2026-08-31",
+    "periodEndDate": "2026-09-06",
+    "remarks": "Production support for the weekly shipment target.",
+    "items": [
+      {
+        "employeeId": "EMP-014",
+        "plannedDate": "2026-08-31",
+        "plannedHours": 2
+      },
+      {
+        "employeeId": "EMP-015",
+        "plannedDate": "2026-09-01",
+        "plannedHours": 1.5
+      }
+    ]
+  }
+
+Replace request body:
+  {
+    "expectedUpdatedAt": "2026-09-03T01:00:00.000Z",
+    "remarks": "Updated weekly production support.",
+    "items": [
+      {
+        "employeeId": "EMP-014",
+        "plannedDate": "2026-09-02",
+        "plannedHours": 3
+      }
+    ]
+  }
+
+Rules:
+  The backend ignores departmentId and always uses the authenticated
+  supervisor's linked department.
+  Every employee must be active, belong to that department, and be directly
+  assigned to the authenticated supervisor.
+  Each employee/date pair can appear only once.
+  Planned hours must be greater than zero.
+  Maximum 500 items per save.
+  Only one Department OT Plan can exist for the same department and exact
+  period.
+  Replace requires the latest overtimePlan.updatedAt as expectedUpdatedAt.
+  Only draft and returned_for_revision department plans can be replaced.
+  The whole operation is atomic: no partial plan is saved when validation fails.
+
+Create success:
+  Status: 201
+  {
+    "message": "Bulk department overtime draft created successfully.",
+    "overtimePlan": {
+      "planId": "DEPTPLAN-...",
+      "planScope": "department",
+      "employeeSignaturesRequired": false,
+      "status": "draft",
+      "remarks": "Production support for the weekly shipment target.",
+      "employeeCount": 2,
+      "itemCount": 2,
+      "plannedHours": 3.5,
+      "items": []
+    }
+  }
+
+Replace success:
+  Status: 200
+  {
+    "message": "Bulk department overtime draft saved successfully.",
+    "overtimePlan": {
+      "planId": "DEPTPLAN-...",
+      "status": "draft",
+      "updatedAt": "2026-09-03T02:00:00.000Z"
+    }
+  }
+
+Common errors:
+  400 PLAN_ITEMS_REQUIRED - No calendar cells contain planned overtime.
+  400 PLAN_ITEM_DATE_OUT_OF_RANGE - A date is outside the selected period.
+  400 PLAN_NOT_EDITABLE - The plan has already entered approval.
+  403 SUPERVISOR_PLAN_EMPLOYEE_OUT_OF_SCOPE - An employee is not assigned to
+      the authenticated supervisor.
+  409 DEPARTMENT_PLAN_ALREADY_EXISTS - The department already has a plan for
+      the exact period.
+  409 DUPLICATE_PLAN_ITEM_IN_REQUEST - An employee/date cell appears twice.
+  409 PLAN_VERSION_CONFLICT - Reload the plan before replacing the matrix.
 
 
 13. CREATE OVERTIME PLAN
