@@ -69,47 +69,28 @@ async function finalizeActualOvertimePeriod(req, res, next) {
   }
 }
 
-async function generateActualOvertimeDocument(req, res, next) {
+async function sendActualOvertimeDocument(req, res, next) {
   try {
-    const document = await overtimeService.generateActualDocument(
+    const document = await overtimeService.buildActualDocumentDownload(
       req.params.actualPeriodId,
-      req.user,
-      { force: req.body && req.body.force === true }
+      req.user
     );
-    return res.json({
-      message: 'Final Actual OT Excel document generated successfully.',
-      finalDocument: await overtimeService.createActualDocumentSignedUrl(document),
-    });
+    res.setHeader('Content-Type', document.contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${document.fileName}"`);
+    res.setHeader('Content-Length', document.buffer.length);
+    res.setHeader('Cache-Control', 'private, no-store');
+    return res.send(document.buffer);
   } catch (error) {
     return next(error);
   }
 }
 
+async function generateActualOvertimeDocument(req, res, next) {
+  return sendActualOvertimeDocument(req, res, next);
+}
+
 async function getActualOvertimeDocument(req, res, next) {
-  try {
-    const document = await overtimeService.getActualDocument(
-      req.params.actualPeriodId,
-      req.user
-    );
-    if (!document) {
-      return res.status(404).json({
-        message: 'No final Actual OT document has been generated for this period.',
-        code: 'ACTUAL_DOCUMENT_NOT_FOUND',
-      });
-    }
-    if (document.status !== 'ready') {
-      return res.status(409).json({
-        message: 'The final Actual OT Excel document is not ready.',
-        code: 'ACTUAL_DOCUMENT_NOT_READY',
-        finalDocument: document,
-      });
-    }
-    return res.json({
-      finalDocument: await overtimeService.createActualDocumentSignedUrl(document),
-    });
-  } catch (error) {
-    return next(error);
-  }
+  return sendActualOvertimeDocument(req, res, next);
 }
 
 module.exports = {

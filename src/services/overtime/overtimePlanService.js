@@ -301,6 +301,7 @@ function mapPlan(row) {
     periodEndDate: dateOnly(row.period_end_date),
     status: row.status,
     planScope: row.plan_scope || 'employee',
+    employeeSignaturesRequired: row.employee_signatures_required !== false,
     routeId: row.route_id || '',
     currentStepOrder: row.current_step_order || null,
     currentApprovalId: row.current_approval_id || '',

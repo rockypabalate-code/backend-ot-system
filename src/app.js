@@ -36,6 +36,7 @@ app.get('/', (req, res) => {
       signature: 'GET own / POST admin-managed /api/users/signature; DELETE /api/users/signature/:userId',
       adminDashboard: 'GET /api/admin/dashboard',
       overtimePlans: 'GET/POST /api/overtime/plans',
+      supervisorBulkDepartmentDraft: 'POST /api/overtime/plans/department/bulk-draft',
       overtimePlanItems: 'POST/PATCH/DELETE /api/overtime/plans/:planId/items',
       overtimePlanWorkflow: 'PATCH /api/overtime/plans/:planId/submit|approve|reject|close',
       overtimePlanFinalDocument: 'GET/POST /api/overtime/plans/:planId/final-document',

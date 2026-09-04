@@ -124,10 +124,11 @@ function validateDocumentData(plan, employeeSignatures, approvedApprovals) {
   const employeeSignatureKeys = new Set(
     employeeSignatures.map((record) => employeeSignatureKey(record.sourceEmployeePlanId, record.employeeId))
   );
-  const missingEmployeeSignature = plan.items.some((item) => (
-    !item.sourceEmployeePlanId
-    || !employeeSignatureKeys.has(employeeSignatureKey(item.sourceEmployeePlanId, item.employeeId))
-  ));
+  const missingEmployeeSignature = plan.employeeSignaturesRequired !== false
+    && plan.items.some((item) => (
+      !item.sourceEmployeePlanId
+      || !employeeSignatureKeys.has(employeeSignatureKey(item.sourceEmployeePlanId, item.employeeId))
+    ));
 
   if (missingEmployeeSignature) {
     throw new AppError(
@@ -310,14 +311,20 @@ async function buildFinalDocumentWorkbook(plan, employeeSignatures, approvedAppr
       item.plannedDate,
       Number(item.plannedHours),
       item.reason,
-      signature.confirmationMethod === 'self' ? 'Employee self-confirmed' : 'Supervisor confirmed on behalf',
-      signature.signedAt,
+      signature
+        ? signature.confirmationMethod === 'self'
+          ? 'Employee self-confirmed'
+          : 'Supervisor confirmed on behalf'
+        : 'Assigned by supervisor',
+      signature ? signature.signedAt : '',
       '',
     ]);
     row.height = 40;
     row.getCell(4).numFmt = '0.00';
     applyTableBorders(row, 1, 8);
-    addEmbeddedSignature(workbook, worksheet, imageIds, signatureImages, signature, 7, row.number);
+    if (signature) {
+      addEmbeddedSignature(workbook, worksheet, imageIds, signatureImages, signature, 7, row.number);
+    }
   }
 
   const totalRow = worksheet.addRow(['', '', 'TOTAL HOURS', Number(plan.plannedHours || 0), '', '', '', '']);
@@ -505,4 +512,5 @@ module.exports = {
   createFinalDocumentSignedUrl,
   generateFinalDocument,
   getFinalDocument,
+  validateDocumentData,
 };

@@ -165,6 +165,68 @@ async function createDepartmentPlanFromEmployeeDrafts(req, res, next) {
   }
 }
 
+async function createSupervisorDepartmentPlanDraft(req, res, next) {
+  try {
+    const employee = await getLinkedEmployee(req.user);
+
+    if (!employee) {
+      return res.status(403).json({ message: 'Your account is not linked to an employee profile.' });
+    }
+
+    const overtimePlan = await overtimeService.createSupervisorDepartmentPlanDraft(
+      {
+        ...req.body,
+        departmentId: employee.departmentId,
+        supervisorUserId: req.user.id,
+      },
+      req.user.id
+    );
+
+    return res.status(201).json({
+      message: 'Bulk department overtime draft created successfully.',
+      overtimePlan,
+    });
+  } catch (error) {
+    return next(error);
+  }
+}
+
+async function replaceSupervisorDepartmentPlanDraft(req, res, next) {
+  try {
+    const [employee, plan] = await Promise.all([
+      getLinkedEmployee(req.user),
+      overtimeService.getOvertimePlan(req.params.planId),
+    ]);
+
+    if (!employee) {
+      return res.status(403).json({ message: 'Your account is not linked to an employee profile.' });
+    }
+
+    if (!plan) {
+      return res.status(404).json({ message: 'Overtime plan not found.' });
+    }
+
+    if ((plan.planScope || 'employee') !== 'department' || plan.departmentId !== employee.departmentId) {
+      return res.status(403).json({
+        message: 'You can only edit department overtime drafts for your own department.',
+      });
+    }
+
+    const overtimePlan = await overtimeService.replaceSupervisorDepartmentPlanDraft(
+      req.params.planId,
+      req.body,
+      req.user.id
+    );
+
+    return res.json({
+      message: 'Bulk department overtime draft saved successfully.',
+      overtimePlan,
+    });
+  } catch (error) {
+    return next(error);
+  }
+}
+
 async function supervisorAcceptEmployeePlan(req, res, next) {
   try {
     const plan = await overtimeService.getOvertimePlan(req.params.planId);
@@ -333,6 +395,7 @@ module.exports = {
   approveDepartmentPlanStep,
   createApprovalRoute,
   createDepartmentPlanFromEmployeeDrafts,
+  createSupervisorDepartmentPlanDraft,
   deleteApprovalRouteAssignment,
   deleteApprovalRouteStep,
   getApprovalRoute,
@@ -341,6 +404,7 @@ module.exports = {
   listApprovalRoutes,
   listMyPendingDepartmentPlanApprovals,
   rejectDepartmentPlanStep,
+  replaceSupervisorDepartmentPlanDraft,
   resetOvertimePlanStatus,
   setApprovalRouteStatus,
   startDepartmentPlanApproval,

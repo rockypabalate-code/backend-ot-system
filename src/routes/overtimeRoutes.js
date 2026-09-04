@@ -24,7 +24,7 @@ router.get('/policies', authorize('admin', 'hr', 'supervisor', 'japanese_managem
 router.get('/actual-periods', authorize('admin', 'hr', 'supervisor', 'japanese_management', 'user'), overtimeController.listActualOvertimePeriods);
 router.get('/actual-periods/:actualPeriodId', authorize('admin', 'hr', 'supervisor', 'japanese_management', 'user'), overtimeController.getActualOvertimePeriod);
 router.patch('/actual-periods/:actualPeriodId/finalize', authorize('admin', 'hr'), overtimeController.finalizeActualOvertimePeriod);
-router.post('/actual-periods/:actualPeriodId/final-document/generate', authorize('admin', 'hr'), overtimeController.generateActualOvertimeDocument);
+router.post('/actual-periods/:actualPeriodId/final-document/generate', authorize('admin', 'hr', 'supervisor', 'japanese_management'), overtimeController.generateActualOvertimeDocument);
 router.get('/actual-periods/:actualPeriodId/final-document', authorize('admin', 'hr', 'supervisor', 'japanese_management'), overtimeController.getActualOvertimeDocument);
 router.patch('/actual-entries/:actualEntryId', authorize('admin', 'hr', 'supervisor'), overtimeController.updateActualOvertimeEntry);
 router.post('/actual-entries/:actualEntryId/comments', authorize('admin', 'hr', 'supervisor', 'user'), overtimeController.addActualOvertimeComment);
@@ -42,6 +42,7 @@ router.get('/plans/calendar', overtimeController.getOvertimePlanCalendarSummary)
 router.get('/plans/pending-approvals', authorize('admin', 'hr', 'supervisor', 'japanese_management'), overtimeController.listMyPendingDepartmentPlanApprovals);
 router.get('/plans/supervisor-dashboard', authorize('admin', 'hr', 'supervisor'), overtimeController.getSupervisorPlanDashboard);
 router.post('/plans/department/from-drafts', authorize('admin', 'hr', 'supervisor'), overtimeController.createDepartmentPlanFromEmployeeDrafts);
+router.post('/plans/department/bulk-draft', authorize('supervisor'), overtimeController.createSupervisorDepartmentPlanDraft);
 router.post('/plans/draft', authorize('user'), overtimeController.createEmployeeOvertimePlanDraft);
 router.post('/plans', authorize('admin', 'hr', 'supervisor', 'user'), overtimeController.createOvertimePlan);
 router.patch('/plans/:planId/submit-and-sign', authorize('user'), overtimeController.submitAndSignEmployeeOvertimePlan);
@@ -63,6 +64,7 @@ router.post('/plans/:planId/final-document/generate', authorize('admin', 'hr'), 
 router.get('/plans/:planId/final-document', authorize('admin', 'hr', 'supervisor', 'japanese_management'), overtimeController.getFinalDocument);
 router.post('/plans/:planId/items', authorize('admin', 'hr', 'supervisor', 'user'), overtimeController.addOvertimePlanItem);
 router.post('/plans/:planId/items/bulk', authorize('admin', 'hr', 'supervisor', 'user'), overtimeController.addOvertimePlanItems);
+router.put('/plans/:planId/department/bulk-draft', authorize('supervisor'), overtimeController.replaceSupervisorDepartmentPlanDraft);
 router.put('/plans/:planId/draft', authorize('user'), overtimeController.replaceEmployeeOvertimePlanDraft);
 router.patch('/plans/:planId/items/:itemId', authorize('admin', 'hr', 'supervisor', 'user'), overtimeController.updateOvertimePlanItem);
 router.delete('/plans/:planId/items/:itemId', authorize('admin', 'hr', 'supervisor', 'user'), overtimeController.deleteOvertimePlanItem);
